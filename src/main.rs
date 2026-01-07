@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 const HISTORY_LIMIT: usize = 2000;
 const CLIENT_QUEUE_SIZE: usize = 1000;
 const DEFAULT_PROJECT_NAME: &str = "compose";
+const BIN_NAME: &str = "composeui";
 
 static INDEX_HTML: &str = include_str!("../assets/compose-ui/index.html");
 static APP_JS: &str = include_str!("../assets/compose-ui/app.js");
@@ -465,7 +466,7 @@ impl ComposeRunner {
 
     fn run(&mut self) -> i32 {
         if self.compose_args.is_empty() {
-            eprintln!("Usage: composer-ui-rs <compose-subcommand> [args...]");
+            eprintln!("Usage: {} <compose-subcommand> [args...]", BIN_NAME);
             return 2;
         }
         let subcommand = self.compose_args[0].clone();
@@ -904,8 +905,22 @@ impl SignalContext {
     }
 }
 
+fn print_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let git_sha = option_env!("GIT_SHA").unwrap_or("unknown");
+    let build_date = option_env!("BUILD_DATE").unwrap_or("unknown");
+    println!(
+        "{{\"version\":\"{}\",\"commit\":\"{}\",\"build_date\":\"{}\"}}",
+        version, git_sha, build_date
+    );
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
+    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+        print_version();
+        return;
+    }
     if !args.is_empty() && args[0] == "--watchdog" {
         if args.len() < 4 {
             return;

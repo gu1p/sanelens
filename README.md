@@ -1,6 +1,6 @@
-# composer-ui-rs
+# composeui
 
-`composer-ui-rs` is a small Rust wrapper around Docker/Podman Compose that adds a local log UI and
+`composeui` is a small Rust wrapper around Docker/Podman Compose that adds a local log UI and
 stream-friendly log output while keeping Compose's CLI behavior.
 
 ## Features
@@ -12,25 +12,45 @@ stream-friendly log output while keeping Compose's CLI behavior.
 
 ## Install
 
-From source:
+### Prebuilt (one line)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gu1p/composer-ui-rs/main/get-composeui.sh | sh
+```
+
+Or with wget:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/gu1p/composer-ui-rs/main/get-composeui.sh | sh
+```
+
+Overrides:
+
+- `COMPOSEUI_VERSION=0.1.0` (default: latest)
+- `COMPOSEUI_INSTALL_DIR=~/.local/bin`
+- `COMPOSEUI_REPO=owner/repo`
+
+### From source
 
 ```bash
 cargo build --release
 ```
 
-Binary is at `target/release/composer-ui-rs`.
+Binary is at `target/release/composeui`.
 
 ## Usage
 
 The tool mirrors Compose subcommands. A compose file is required via `-f/--file` or `COMPOSE_FILE`.
 
 ```bash
-composer-ui-rs -f docker-compose.yml up
-composer-ui-rs -f docker-compose.yml up -d
-COMPOSE_FILE=docker-compose.yml composer-ui-rs logs
+composeui --version
+composeui -f docker-compose.yml up
+composeui -f docker-compose.yml up -d
+COMPOSE_FILE=docker-compose.yml composeui logs
 ```
 
 When running `up`, a log UI is started on a random local port and printed to stdout.
+`composeui --version` prints the build version, commit hash, and build date.
 
 ## Environment variables
 
@@ -50,6 +70,7 @@ When running `up`, a log UI is started on a random local port and printed to std
 make build
 make release
 make test
+make install
 ```
 
 Package an artifact (uses the host target by default):
@@ -57,6 +78,8 @@ Package an artifact (uses the host target by default):
 ```bash
 make package
 ```
+
+Artifacts are written to `dist/` as `composeui-<version>-<target>`.
 
 To package a specific target:
 
