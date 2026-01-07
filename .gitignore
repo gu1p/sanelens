@@ -1,0 +1,13 @@
+/target/
+/dist/
+*.rs.bk
+*.dSYM
+*.dSYM/*
+*.pdb
+*.swp
+*.swo
+*.tmp
+*.log
+.DS_Store
+.idea/
+.vscode/

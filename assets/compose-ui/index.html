@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compose Log Deck</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-title">Compose</div>
+        <div class="brand-subtitle">Log Deck</div>
+      </div>
+      <div class="top-actions">
+        <button id="add-panel" class="btn btn-primary">Add panel</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="services">
+        <div class="section-title">Services</div>
+        <div class="hint">
+          Click a service to focus the active panel. Use open to visit endpoints.
+        </div>
+        <div id="service-list" class="service-list"></div>
+      </aside>
+
+      <section class="panels" id="panels"></section>
+    </main>
+
+    <template id="panel-template">
+      <article class="panel">
+        <header class="panel-head">
+          <div class="panel-heading">
+            <div class="panel-title"></div>
+            <div class="panel-meta"></div>
+          </div>
+          <div class="panel-actions">
+            <button class="chip toggle-follow is-active" type="button">Follow</button>
+            <button class="chip remove-panel" type="button">Close</button>
+          </div>
+        </header>
+        <div class="panel-filters"></div>
+        <div class="log-view"></div>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
