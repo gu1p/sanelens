@@ -1,7 +1,7 @@
 /target/
 /dist/
-/assets/compose-ui/node_modules/
-/assets/compose-ui/dist/
+/assets/sanelens/node_modules/
+/assets/sanelens/dist/
 *.rs.bk
 *.dSYM
 *.dSYM/*

@@ -1,20 +1,20 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${COMPOSE_UI_REPO:-gu1p/compose-ui}"
-BIN_NAME="${COMPOSE_UI_BIN:-compose-ui}"
-INSTALL_DIR="${COMPOSE_UI_INSTALL_DIR:-}"
-VERSION="${COMPOSE_UI_VERSION:-latest}"
+REPO="${SANELENS_REPO:-gu1p/sanelens}"
+BIN_NAME="${SANELENS_BIN:-sanelens}"
+INSTALL_DIR="${SANELENS_INSTALL_DIR:-}"
+VERSION="${SANELENS_VERSION:-latest}"
 
 usage() {
   cat <<EOF
-Usage: get-compose-ui.sh [--version <version>] [--repo <owner/repo>] [--install-dir <path>]
+Usage: get-sanelens.sh [--version <version>] [--repo <owner/repo>] [--install-dir <path>]
 
 Environment overrides:
-  COMPOSE_UI_REPO=owner/repo
-  COMPOSE_UI_BIN=compose-ui
-  COMPOSE_UI_INSTALL_DIR=~/.local/bin
-  COMPOSE_UI_VERSION=latest
+  SANELENS_REPO=owner/repo
+  SANELENS_BIN=sanelens
+  SANELENS_INSTALL_DIR=~/.local/bin
+  SANELENS_VERSION=latest
 EOF
 }
 
@@ -26,7 +26,7 @@ fail() {
 append_path() {
   file="$1"
   line="$2"
-  marker="# Added by compose-ui installer"
+  marker="# Added by sanelens installer"
   if [ -f "$file" ] && grep -Fqs "$line" "$file"; then
     return 0
   fi

@@ -8,9 +8,9 @@ use std::time::Duration;
 use crate::domain::{LogEvent, ServiceInfo};
 use crate::support::logging::LogHub;
 
-static INDEX_HTML: &str = include_str!(env!("COMPOSE_UI_INDEX_HTML"));
-static APP_JS: &str = include_str!(env!("COMPOSE_UI_APP_JS"));
-static STYLES_CSS: &str = include_str!(env!("COMPOSE_UI_STYLES_CSS"));
+static INDEX_HTML: &str = include_str!(env!("SANELENS_INDEX_HTML"));
+static APP_JS: &str = include_str!(env!("SANELENS_APP_JS"));
+static STYLES_CSS: &str = include_str!(env!("SANELENS_STYLES_CSS"));
 
 pub(crate) struct UiServer {
     stop_event: Arc<AtomicBool>,

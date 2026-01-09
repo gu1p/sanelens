@@ -1,11 +1,11 @@
 .PHONY: build release test fmt clippy lint package install ui-build ui-clean
 
-BIN_NAME ?= compose-ui
+BIN_NAME ?= sanelens
 DIST_DIR ?= dist
 VERSION ?= $(shell awk -F '\"' '/^version =/ {print $$2; exit}' Cargo.toml)
 GIT_SHA ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
-UI_DIR ?= assets/compose-ui
+UI_DIR ?= assets/sanelens
 UI_DIST_DIR ?= $(abspath $(UI_DIR)/dist)
 UI_LOCK := $(wildcard $(UI_DIR)/package-lock.json)
 UI_BUILD ?= 1
@@ -31,21 +31,21 @@ TARGET_DIR := target/$(TARGET)
 endif
 
 build: $(BUILD_DEPS)
-	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" \
+	SANELENS_DIST_DIR="$(UI_DIST_DIR)" \
 	GIT_SHA="$(GIT_SHA)" BUILD_DATE="$(BUILD_DATE)" cargo build $(TARGET_FLAG)
 
 release: $(BUILD_DEPS)
-	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" \
+	SANELENS_DIST_DIR="$(UI_DIST_DIR)" \
 	GIT_SHA="$(GIT_SHA)" BUILD_DATE="$(BUILD_DATE)" cargo build --release $(TARGET_FLAG)
 
 test: $(BUILD_DEPS)
-	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" cargo test
+	SANELENS_DIST_DIR="$(UI_DIST_DIR)" cargo test
 
 fmt:
 	cargo fmt --all
 
 clippy: $(BUILD_DEPS)
-	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" cargo clippy --all-targets -- -D warnings
+	SANELENS_DIST_DIR="$(UI_DIST_DIR)" cargo clippy --all-targets -- -D warnings
 
 lint: fmt clippy
 
@@ -69,7 +69,7 @@ package: release
 	echo "Created $(DIST_DIR)/$$out_name";
 
 install:
-	sh ./get-compose-ui.sh
+	sh ./get-sanelens.sh
 
 ui-build: $(UI_DIST_DIR)/index.html
 
