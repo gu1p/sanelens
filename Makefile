@@ -1,10 +1,27 @@
-.PHONY: build release test fmt clippy lint package install
+.PHONY: build release test fmt clippy lint package install ui-build ui-clean
 
 BIN_NAME ?= compose-ui
 DIST_DIR ?= dist
 VERSION ?= $(shell awk -F '\"' '/^version =/ {print $$2; exit}' Cargo.toml)
 GIT_SHA ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+UI_DIR ?= assets/compose-ui
+UI_DIST_DIR ?= $(abspath $(UI_DIR)/dist)
+UI_LOCK := $(wildcard $(UI_DIR)/package-lock.json)
+UI_BUILD ?= 1
+BUILD_DEPS :=
+ifneq ($(UI_BUILD),0)
+BUILD_DEPS += ui-build
+endif
+UI_SOURCES := $(shell find $(UI_DIR)/src -type f) \
+	$(UI_DIR)/index.html \
+	$(UI_DIR)/vite.config.ts \
+	$(UI_DIR)/tailwind.config.cjs \
+	$(UI_DIR)/postcss.config.cjs \
+	$(UI_DIR)/svelte.config.js \
+	$(UI_DIR)/Makefile \
+	$(UI_DIR)/package.json \
+	$(UI_LOCK)
 
 TARGET_FLAG :=
 TARGET_DIR := target
@@ -13,20 +30,22 @@ TARGET_FLAG := --target $(TARGET)
 TARGET_DIR := target/$(TARGET)
 endif
 
-build:
+build: $(BUILD_DEPS)
+	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" \
 	GIT_SHA="$(GIT_SHA)" BUILD_DATE="$(BUILD_DATE)" cargo build $(TARGET_FLAG)
 
-release:
+release: $(BUILD_DEPS)
+	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" \
 	GIT_SHA="$(GIT_SHA)" BUILD_DATE="$(BUILD_DATE)" cargo build --release $(TARGET_FLAG)
 
-test:
-	cargo test
+test: $(BUILD_DEPS)
+	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" cargo test
 
 fmt:
 	cargo fmt --all
 
-clippy:
-	cargo clippy --all-targets -- -D warnings
+clippy: $(BUILD_DEPS)
+	COMPOSE_UI_DIST_DIR="$(UI_DIST_DIR)" cargo clippy --all-targets -- -D warnings
 
 lint: fmt clippy
 
@@ -51,3 +70,11 @@ package: release
 
 install:
 	sh ./get-compose-ui.sh
+
+ui-build: $(UI_DIST_DIR)/index.html
+
+$(UI_DIST_DIR)/index.html: $(UI_SOURCES)
+	$(MAKE) -C "$(UI_DIR)" dist OUT_DIR="$(UI_DIST_DIR)"
+
+ui-clean:
+	$(MAKE) -C "$(UI_DIR)" clean OUT_DIR="$(UI_DIST_DIR)"

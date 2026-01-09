@@ -1,5 +1,7 @@
 /target/
 /dist/
+/assets/compose-ui/node_modules/
+/assets/compose-ui/dist/
 *.rs.bk
 *.dSYM
 *.dSYM/*

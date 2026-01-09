@@ -33,10 +33,29 @@ Overrides:
 ### From source
 
 ```bash
-cargo build --release
+make release
 ```
 
 Binary is at `target/release/compose-ui`.
+
+If you want to use Cargo directly, build the UI first:
+
+```bash
+make -C assets/compose-ui dist
+COMPOSE_UI_DIST_DIR=assets/compose-ui/dist cargo build --release
+```
+
+To use a prebuilt dist from another stage/location:
+
+```bash
+COMPOSE_UI_DIST_DIR=/path/to/dist cargo build --release
+```
+
+If you already have `assets/compose-ui/dist` in place, you can skip the UI step in Make:
+
+```bash
+UI_BUILD=0 make release
+```
 
 ## Usage
 
@@ -76,6 +95,8 @@ make release
 make test
 make install
 ```
+
+The UI build is handled by `assets/compose-ui/Makefile` and outputs a standalone `dist/`.
 
 Package an artifact (uses the host target by default):
 

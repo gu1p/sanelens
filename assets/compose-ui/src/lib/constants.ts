@@ -1,0 +1,8 @@
+export const HISTORY_LIMIT = 20000;
+export const MAX_LINES_PER_PANEL = 8000;
+export const URL_STATE_KEY = "panels";
+export const URL_ACTIVE_KEY = "active";
+export const URL_SYNC_DELAY = 200;
+export const PANEL_SEPARATOR = "~";
+export const GROUP_SEPARATOR = ";";
+export const LIST_SEPARATOR = ",";

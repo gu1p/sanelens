@@ -7,9 +7,28 @@ on:
       - "v*"
 
 jobs:
+  ui:
+    runs-on: ubuntu-latest
+    container: node:20-bullseye
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          apt-get install -y git make
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build UI
+        run: make -C assets/compose-ui dist
+      - name: Upload UI dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist
+          path: assets/compose-ui/dist
+
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    needs: ui
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +42,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Download UI dist
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-dist
+          path: assets/compose-ui/dist
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
       - name: Cache
@@ -34,7 +58,7 @@ jobs:
           BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
           VERSION="${{ github.ref_name }}" \
           GIT_SHA="${{ github.sha }}" \
-          make package TARGET=${{ matrix.target }}
+          UI_BUILD=0 make package TARGET=${{ matrix.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

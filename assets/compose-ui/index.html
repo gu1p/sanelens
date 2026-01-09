@@ -4,85 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Compose Log Deck</title>
-    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-title">Compose</div>
-        <div class="brand-subtitle">Log Deck</div>
-      </div>
-      <div class="top-actions">
-        <button id="add-panel" class="btn btn-primary">Add panel</button>
-      </div>
-    </header>
-
-    <main class="layout">
-      <aside class="services">
-        <div class="section-title">Services</div>
-        <div class="hint">
-          Click a service to focus the active panel. Use open to visit endpoints.
-        </div>
-        <div id="service-list" class="service-list"></div>
-      </aside>
-
-      <section class="panels" id="panels"></section>
-    </main>
-
-    <template id="panel-template">
-      <article class="panel">
-        <header class="panel-head">
-          <div class="panel-heading">
-            <div class="panel-title"></div>
-            <div class="panel-meta"></div>
-          </div>
-          <div class="panel-actions">
-            <button class="chip toggle-filter" type="button">Filters</button>
-            <button class="chip toggle-follow is-active" type="button">Follow</button>
-            <button class="chip remove-panel" type="button">Close</button>
-          </div>
-        </header>
-        <div class="panel-filters"></div>
-        <div class="log-view"></div>
-      </article>
-    </template>
-
-    <aside id="filter-drawer" class="drawer" aria-hidden="true">
-      <div class="drawer-card" role="dialog" aria-labelledby="filter-drawer-title">
-        <div class="drawer-header">
-          <div class="drawer-heading">
-            <div class="drawer-title" id="filter-drawer-title">Panel filters</div>
-            <div class="drawer-subtitle" id="filter-drawer-subtitle"></div>
-          </div>
-          <button class="chip drawer-close" type="button" data-drawer-close>Close</button>
-        </div>
-        <div class="drawer-filters">
-          <div class="filter-group" data-filter="include">
-            <div class="filter-group-head">
-              <span class="filter-label">Include</span>
-              <button class="chip chip-small add-filter" type="button" data-filter="include">
-                Add
-              </button>
-            </div>
-            <div class="filter-list" data-filter-list="include"></div>
-          </div>
-          <div class="filter-group" data-filter="exclude">
-            <div class="filter-group-head">
-              <span class="filter-label">Exclude</span>
-              <button class="chip chip-small add-filter" type="button" data-filter="exclude">
-                Add
-              </button>
-            </div>
-            <div class="filter-list" data-filter-list="exclude"></div>
-          </div>
-        </div>
-        <div class="drawer-actions">
-          <button id="filter-clear" class="chip" type="button">Clear</button>
-          <button id="filter-done" class="chip is-active" type="button">Done</button>
-        </div>
-      </div>
-    </aside>
-
-    <script src="app.js"></script>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

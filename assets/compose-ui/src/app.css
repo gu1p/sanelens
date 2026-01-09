@@ -1,0 +1,79 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: #f5efe6;
+    --bg-2: #e7dfd1;
+    --panel: #fff7ec;
+    --panel-2: #f8eee0;
+    --ink: #1f1b16;
+    --muted: #5e5448;
+    --border: #d5cbbd;
+    --accent: #e07a5f;
+    --accent-2: #3d405b;
+    --accent-3: #81b29a;
+    --bg-rgb: 245 239 230;
+    --bg-2-rgb: 231 223 209;
+    --panel-rgb: 255 247 236;
+    --panel-2-rgb: 248 238 224;
+    --ink-rgb: 31 27 22;
+    --muted-rgb: 94 84 72;
+    --border-rgb: 213 203 189;
+    --accent-rgb: 224 122 95;
+    --accent-2-rgb: 61 64 91;
+    --accent-3-rgb: 129 178 154;
+    --shadow: 0 18px 45px rgba(31, 27, 22, 0.14);
+    --drawer-width: 360px;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+
+  body {
+    @apply font-ui;
+    margin: 0;
+    color: var(--ink);
+    background:
+      radial-gradient(circle at 10% 10%, rgba(224, 122, 95, 0.18), transparent 45%),
+      radial-gradient(circle at 80% 20%, rgba(129, 178, 154, 0.2), transparent 45%),
+      linear-gradient(160deg, var(--bg), var(--bg-2));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(transparent 95%, rgba(31, 27, 22, 0.06) 96%),
+      linear-gradient(90deg, transparent 95%, rgba(31, 27, 22, 0.06) 96%);
+    background-size: 48px 48px;
+    opacity: 0.35;
+    pointer-events: none;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .chip-active {
+    background: var(--chip-color, var(--accent-3));
+  }
+}
