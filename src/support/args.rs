@@ -82,8 +82,7 @@ pub(crate) fn extract_subcommand(args: &[String]) -> Option<String> {
 fn option_takes_value(arg: &str) -> bool {
     matches!(
         arg,
-        "-f"
-            | "--file"
+        "-f" | "--file"
             | "-p"
             | "--project-name"
             | "--project-directory"
@@ -165,9 +164,11 @@ pub(crate) fn derive_project_name(compose_file: &str) -> String {
         .filter(|name| !name.is_empty())
         .map(|name| name.to_string())
         .or_else(|| {
-            env::current_dir()
-                .ok()
-                .and_then(|dir| dir.file_name().and_then(|name| name.to_str()).map(|name| name.to_string()))
+            env::current_dir().ok().and_then(|dir| {
+                dir.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.to_string())
+            })
         })
         .unwrap_or_else(|| DEFAULT_PROJECT_NAME.to_string());
     sanitize_project_name(&base)

@@ -72,7 +72,10 @@ fn python_traceback_groups_until_next_start() {
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].line, expected_first);
     assert_eq!(events[0].container_ts, None);
-    assert_eq!(events[1].line, "ERROR:    Application startup failed. Exiting.");
+    assert_eq!(
+        events[1].line,
+        "ERROR:    Application startup failed. Exiting."
+    );
     assert_eq!(events[1].container_ts, None);
 }
 
@@ -142,7 +145,10 @@ fn docker_timestamp_prefix_does_not_split_traceback() {
     .join("\n");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].line, expected);
-    assert_eq!(events[0].container_ts.as_deref(), Some("2026-01-08T00:32:33-03:00"));
+    assert_eq!(
+        events[0].container_ts.as_deref(),
+        Some("2026-01-08T00:32:33-03:00")
+    );
 }
 
 #[test]
@@ -168,7 +174,10 @@ fn docker_timestamp_only_line_keeps_blank_line() {
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].line, expected);
-    assert_eq!(events[0].container_ts.as_deref(), Some("2026-01-08T11:11:38-03:00"));
+    assert_eq!(
+        events[0].container_ts.as_deref(),
+        Some("2026-01-08T11:11:38-03:00")
+    );
 }
 
 #[test]
@@ -191,7 +200,10 @@ fn docker_timestamp_is_metadata_only() {
     .join("\n");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].line, expected);
-    assert_eq!(events[0].container_ts.as_deref(), Some("2026-01-08T00:32:33-03:00"));
+    assert_eq!(
+        events[0].container_ts.as_deref(),
+        Some("2026-01-08T00:32:33-03:00")
+    );
 }
 
 #[test]
@@ -200,10 +212,7 @@ fn docker_timestamp_gap_overrides_arrival_gap() {
     let start = Instant::now();
     let mut events = Vec::new();
 
-    events.extend(agg.push_line(
-        "2026-01-08T00:32:33-03:00 ERROR first line",
-        start,
-    ));
+    events.extend(agg.push_line("2026-01-08T00:32:33-03:00 ERROR first line", start));
     events.extend(agg.push_line(
         "2026-01-08T00:32:33-03:00 second line",
         start + Duration::from_millis(10),
@@ -212,15 +221,14 @@ fn docker_timestamp_gap_overrides_arrival_gap() {
         events.push(last);
     }
 
-    let expected = [
-        "ERROR first line",
-        "second line",
-    ]
-    .join("\n");
+    let expected = ["ERROR first line", "second line"].join("\n");
 
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].line, expected);
-    assert_eq!(events[0].container_ts.as_deref(), Some("2026-01-08T00:32:33-03:00"));
+    assert_eq!(
+        events[0].container_ts.as_deref(),
+        Some("2026-01-08T00:32:33-03:00")
+    );
 }
 
 #[test]

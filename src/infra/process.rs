@@ -21,12 +21,17 @@ pub(crate) fn command_exists(cmd: &str) -> bool {
 }
 
 pub(crate) fn run_status(cmd: &[String]) -> bool {
-    run_output(cmd).map(|output| output.status.success()).unwrap_or(false)
+    run_output(cmd)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
 }
 
 pub(crate) fn run_output(cmd: &[String]) -> io::Result<Output> {
     let mut command = Command::new(&cmd[0]);
-    command.args(&cmd[1..]).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .args(&cmd[1..])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     command.output()
 }
 

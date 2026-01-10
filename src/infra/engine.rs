@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use crate::domain::{EngineKind, Provider, Scope};
 use crate::infra::compose::{
-    collect_docker_container_ids, collect_podman_container_ids, collect_podman_container_ids_by_name,
-    remove_project_pods, resolve_service_name_docker, resolve_service_name_podman,
+    collect_docker_container_ids, collect_podman_container_ids,
+    collect_podman_container_ids_by_name, remove_project_pods, resolve_service_name_docker,
+    resolve_service_name_podman,
 };
 use crate::infra::process::run_output;
 use crate::support::args::has_flag;
@@ -21,7 +22,9 @@ pub(crate) struct Engine {
 impl Engine {
     pub(crate) fn new(kind: EngineKind, compose_cmd: &[String]) -> Self {
         let connection = if matches!(kind, EngineKind::Podman) {
-            env::var("PODMAN_CONNECTION").ok().or_else(|| extract_connection(compose_cmd))
+            env::var("PODMAN_CONNECTION")
+                .ok()
+                .or_else(|| extract_connection(compose_cmd))
         } else {
             None
         };
@@ -69,8 +72,12 @@ impl Engine {
 
     pub(crate) fn collect_container_ids(&self, project_name: &str, scope: Scope) -> Vec<String> {
         match self.kind {
-            EngineKind::Podman => collect_podman_container_ids(&self.podman_cmd, project_name, scope),
-            EngineKind::Docker => collect_docker_container_ids(&self.docker_cmd, project_name, scope),
+            EngineKind::Podman => {
+                collect_podman_container_ids(&self.podman_cmd, project_name, scope)
+            }
+            EngineKind::Docker => {
+                collect_docker_container_ids(&self.docker_cmd, project_name, scope)
+            }
         }
     }
 

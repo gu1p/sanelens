@@ -5,6 +5,6 @@ pub(crate) mod multiline;
 pub(crate) mod services;
 
 #[cfg(test)]
-mod multiline_tests;
-#[cfg(test)]
 mod logging_tests;
+#[cfg(test)]
+mod multiline_tests;

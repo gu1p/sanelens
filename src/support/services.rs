@@ -10,7 +10,12 @@ pub(crate) fn build_service_info(compose_file: &str) -> Vec<ServiceInfo> {
     for name in services {
         let endpoints: Vec<String> = ports_by_service
             .get(&name)
-            .map(|ports| ports.iter().map(|port| format!("http://localhost:{}", port)).collect())
+            .map(|ports| {
+                ports
+                    .iter()
+                    .map(|port| format!("http://localhost:{}", port))
+                    .collect()
+            })
             .unwrap_or_default();
         info.push(ServiceInfo {
             name: name.clone(),
@@ -22,7 +27,9 @@ pub(crate) fn build_service_info(compose_file: &str) -> Vec<ServiceInfo> {
     info
 }
 
-fn parse_compose_services_and_ports(compose_file: &str) -> (Vec<String>, HashMap<String, Vec<String>>) {
+fn parse_compose_services_and_ports(
+    compose_file: &str,
+) -> (Vec<String>, HashMap<String, Vec<String>>) {
     let contents = match fs::read_to_string(compose_file) {
         Ok(contents) => contents,
         Err(_) => return (Vec::new(), HashMap::new()),
@@ -51,7 +58,9 @@ fn parse_compose_services_and_ports(compose_file: &str) -> (Vec<String>, HashMap
         services.push(name.clone());
         let mut ports = Vec::new();
         if let Some(service_map) = service_val.as_mapping() {
-            if let Some(ports_val) = service_map.get(&serde_yaml::Value::String("ports".to_string())) {
+            if let Some(ports_val) =
+                service_map.get(&serde_yaml::Value::String("ports".to_string()))
+            {
                 if let Some(list) = ports_val.as_sequence() {
                     for entry in list {
                         match entry {

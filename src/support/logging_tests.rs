@@ -20,6 +20,8 @@ fn strips_csi_sequences() {
 
 #[test]
 fn strips_single_byte_csi_sequences() {
-    let input = [0x9b, b'3', b'1', b'm', b'w', b'a', b'r', b'n', 0x9b, b'0', b'm'];
+    let input = [
+        0x9b, b'3', b'1', b'm', b'w', b'a', b'r', b'n', 0x9b, b'0', b'm',
+    ];
     assert_eq!(strip_ansi_codes(&input), "warn");
 }

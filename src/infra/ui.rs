@@ -37,7 +37,9 @@ impl UiServer {
                         let services = services.clone();
                         let stop_event = stop_clone.clone();
                         thread::spawn(move || {
-                            if let Err(err) = handle_connection(stream, log_hub, services, stop_event) {
+                            if let Err(err) =
+                                handle_connection(stream, log_hub, services, stop_event)
+                            {
                                 eprintln!("[compose] ui connection error: {}", err);
                             }
                         });
@@ -101,15 +103,24 @@ fn handle_connection(
     }
 
     match path {
-        "/" | "/index.html" => {
-            write_response(stream, 200, "text/html; charset=utf-8", INDEX_HTML.as_bytes())
-        }
-        "/app.js" => {
-            write_response(stream, 200, "application/javascript; charset=utf-8", APP_JS.as_bytes())
-        }
-        "/styles.css" => {
-            write_response(stream, 200, "text/css; charset=utf-8", STYLES_CSS.as_bytes())
-        }
+        "/" | "/index.html" => write_response(
+            stream,
+            200,
+            "text/html; charset=utf-8",
+            INDEX_HTML.as_bytes(),
+        ),
+        "/app.js" => write_response(
+            stream,
+            200,
+            "application/javascript; charset=utf-8",
+            APP_JS.as_bytes(),
+        ),
+        "/styles.css" => write_response(
+            stream,
+            200,
+            "text/css; charset=utf-8",
+            STYLES_CSS.as_bytes(),
+        ),
         "/api/services" => {
             let payload = serde_json::to_vec(&ServicesResponse {
                 services: service_info.as_slice(),
@@ -128,7 +139,12 @@ fn handle_connection(
     }
 }
 
-fn write_response(stream: TcpStream, status: u16, content_type: &str, body: &[u8]) -> io::Result<()> {
+fn write_response(
+    stream: TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> io::Result<()> {
     write_response_with_headers(stream, status, content_type, body, &[])
 }
 

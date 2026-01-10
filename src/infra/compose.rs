@@ -115,7 +115,11 @@ fn display_engine(kind: EngineKind) -> &'static str {
 
 fn detect_podman_compose_cmd() -> Option<Vec<String>> {
     if command_exists("podman") {
-        if run_status(&["podman".to_string(), "compose".to_string(), "version".to_string()]) {
+        if run_status(&[
+            "podman".to_string(),
+            "compose".to_string(),
+            "version".to_string(),
+        ]) {
             let mut cmd = vec!["podman".to_string()];
             if let Ok(conn) = env::var("PODMAN_CONNECTION") {
                 cmd.push("--connection".to_string());
@@ -133,7 +137,11 @@ fn detect_podman_compose_cmd() -> Option<Vec<String>> {
 
 fn detect_docker_compose_cmd() -> Option<Vec<String>> {
     if command_exists("docker")
-        && run_status(&["docker".to_string(), "compose".to_string(), "version".to_string()])
+        && run_status(&[
+            "docker".to_string(),
+            "compose".to_string(),
+            "version".to_string(),
+        ])
     {
         return Some(vec!["docker".to_string(), "compose".to_string()]);
     }
@@ -143,7 +151,11 @@ fn detect_docker_compose_cmd() -> Option<Vec<String>> {
     None
 }
 
-pub(crate) fn collect_podman_container_ids(podman_cmd: &[String], project_name: &str, scope: Scope) -> Vec<String> {
+pub(crate) fn collect_podman_container_ids(
+    podman_cmd: &[String],
+    project_name: &str,
+    scope: Scope,
+) -> Vec<String> {
     let mut ids = HashSet::new();
     let base = build_podman_ps_cmd(podman_cmd, scope);
     let labels = [
@@ -178,7 +190,11 @@ fn build_podman_ps_cmd(podman_cmd: &[String], scope: Scope) -> Vec<String> {
     cmd
 }
 
-pub(crate) fn collect_docker_container_ids(docker_cmd: &[String], project_name: &str, scope: Scope) -> Vec<String> {
+pub(crate) fn collect_docker_container_ids(
+    docker_cmd: &[String],
+    project_name: &str,
+    scope: Scope,
+) -> Vec<String> {
     let mut cmd = docker_cmd.to_vec();
     cmd.push("ps".to_string());
     if matches!(scope, Scope::All) {
@@ -201,7 +217,10 @@ pub(crate) fn collect_docker_container_ids(docker_cmd: &[String], project_name: 
     ids
 }
 
-pub(crate) fn collect_podman_container_ids_by_name(podman_cmd: &[String], project_name: &str) -> Vec<String> {
+pub(crate) fn collect_podman_container_ids_by_name(
+    podman_cmd: &[String],
+    project_name: &str,
+) -> Vec<String> {
     let mut cmd = podman_cmd.to_vec();
     cmd.push("ps".to_string());
     cmd.push("-a".to_string());
@@ -240,7 +259,9 @@ pub(crate) fn remove_project_pods(podman_cmd: &[String], project_name: &str) {
             let mut parts = line.splitn(2, ' ');
             let id = parts.next().unwrap_or("");
             let name = parts.next().unwrap_or("");
-            if name == format!("pod_{}", project_name) || name.starts_with(&format!("{}-", project_name)) {
+            if name == format!("pod_{}", project_name)
+                || name.starts_with(&format!("{}-", project_name))
+            {
                 if !id.trim().is_empty() {
                     pod_ids.push(id.trim().to_string());
                 }
@@ -258,7 +279,11 @@ pub(crate) fn remove_project_pods(podman_cmd: &[String], project_name: &str) {
     let _ = run_output(&rm_cmd);
 }
 
-pub(crate) fn resolve_service_name_podman(podman_cmd: &[String], project_name: &str, cid: &str) -> String {
+pub(crate) fn resolve_service_name_podman(
+    podman_cmd: &[String],
+    project_name: &str,
+    cid: &str,
+) -> String {
     let label_keys = ["io.podman.compose.service", "com.docker.compose.service"];
     for label in &label_keys {
         let mut cmd = podman_cmd.to_vec();
@@ -291,7 +316,11 @@ pub(crate) fn resolve_service_name_podman(podman_cmd: &[String], project_name: &
     cid.to_string()
 }
 
-pub(crate) fn resolve_service_name_docker(docker_cmd: &[String], project_name: &str, cid: &str) -> String {
+pub(crate) fn resolve_service_name_docker(
+    docker_cmd: &[String],
+    project_name: &str,
+    cid: &str,
+) -> String {
     let label_keys = ["com.docker.compose.service"];
     for label in &label_keys {
         let mut cmd = docker_cmd.to_vec();

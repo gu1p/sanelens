@@ -162,8 +162,8 @@ impl ComposeRunner {
             eprintln!("Usage: {} <compose-subcommand> [args...]", BIN_NAME);
             return 2;
         }
-        let subcommand = extract_subcommand(&self.compose_args)
-            .unwrap_or_else(|| self.compose_args[0].clone());
+        let subcommand =
+            extract_subcommand(&self.compose_args).unwrap_or_else(|| self.compose_args[0].clone());
         let mut no_cache_requested = false;
         let mut force_recreate_requested = false;
         if subcommand == "up" {
@@ -177,7 +177,8 @@ impl ComposeRunner {
         if !has_project_name(&self.compose_args) {
             self.project_args = vec!["-p".to_string(), self.project_name.clone()];
         }
-        if self.provider == Provider::PodmanCompose && !has_flag(&self.compose_args, &["--in-pod"]) {
+        if self.provider == Provider::PodmanCompose && !has_flag(&self.compose_args, &["--in-pod"])
+        {
             let mut updated = vec!["--in-pod".to_string(), "false".to_string()];
             updated.extend(self.compose_args.iter().cloned());
             self.compose_args = updated;
@@ -233,15 +234,22 @@ impl ComposeRunner {
         if log_follow_enabled && subcommand == "up" {
             if manual_log_follow {
                 self.compose_args = insert_after(&self.compose_args, "up", "--detach");
-            } else if self.engine.follow_logs_in_thread(&subcommand, detach_requested) {
+            } else if self
+                .engine
+                .follow_logs_in_thread(&subcommand, detach_requested)
+            {
                 follow_in_thread = true;
                 self.start_log_follow_thread(false);
             }
         }
 
         if subcommand == "up" {
-            let running_ids = self.engine.collect_container_ids(&self.project_name, Scope::Running);
-            let all_ids = self.engine.collect_container_ids(&self.project_name, Scope::All);
+            let running_ids = self
+                .engine
+                .collect_container_ids(&self.project_name, Scope::Running);
+            let all_ids = self
+                .engine
+                .collect_container_ids(&self.project_name, Scope::All);
             if running_ids.is_empty() && !all_ids.is_empty() {
                 self.engine.cleanup_project(
                     &self.compose_cmd,
@@ -263,7 +271,10 @@ impl ComposeRunner {
         let exit_code = self.run_compose(&self.compose_args);
         if exit_code != 0 {
             if subcommand == "up" && !auto_start_after_up {
-                if self.engine.start_project_containers_with_retries(&self.project_name) {
+                if self
+                    .engine
+                    .start_project_containers_with_retries(&self.project_name)
+                {
                     return 0;
                 }
                 self.engine.cleanup_project(
@@ -278,7 +289,10 @@ impl ComposeRunner {
         }
 
         if subcommand == "up" && auto_start_after_up {
-            if !self.engine.start_project_containers_with_retries(&self.project_name) {
+            if !self
+                .engine
+                .start_project_containers_with_retries(&self.project_name)
+            {
                 return 1;
             }
         }
@@ -343,8 +357,14 @@ impl ComposeRunner {
     }
 
     fn start_ui(&mut self) {
-        let log_hub = self.log_hub.get_or_insert_with(|| Arc::new(LogHub::new(HISTORY_LIMIT)));
-        match UiServer::start(log_hub.clone(), self.service_info.clone(), self.stop_event.clone()) {
+        let log_hub = self
+            .log_hub
+            .get_or_insert_with(|| Arc::new(LogHub::new(HISTORY_LIMIT)));
+        match UiServer::start(
+            log_hub.clone(),
+            self.service_info.clone(),
+            self.stop_event.clone(),
+        ) {
             Ok(server) => {
                 let port = server.port();
                 self.ui_server = Some(server);
@@ -458,7 +478,10 @@ impl LogFollower {
 
             let cmd = self.engine.logs_cmd(&cid, timestamps_enabled);
             let mut command = Command::new(&cmd[0]);
-            command.args(&cmd[1..]).stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+                .args(&cmd[1..])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             let mut child = match spawn_process_group(&mut command) {
                 Ok(child) => child,
                 Err(_) => continue,

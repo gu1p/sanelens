@@ -7,7 +7,12 @@ use crate::infra::compose::{detect_compose_cmd, detect_provider};
 use crate::infra::engine::Engine;
 use crate::infra::process::{command_exists, pid_alive};
 
-pub(crate) fn run_watchdog(parent_pid: i32, project_name: &str, compose_file: &str, connection: Option<String>) {
+pub(crate) fn run_watchdog(
+    parent_pid: i32,
+    project_name: &str,
+    compose_file: &str,
+    connection: Option<String>,
+) {
     if parent_pid <= 0 {
         return;
     }
@@ -15,7 +20,10 @@ pub(crate) fn run_watchdog(parent_pid: i32, project_name: &str, compose_file: &s
         thread::sleep(Duration::from_secs(1));
     }
     let (compose_cmd, engine_kind) = if command_exists("podman") {
-        (vec!["podman".to_string(), "compose".to_string()], EngineKind::Podman)
+        (
+            vec!["podman".to_string(), "compose".to_string()],
+            EngineKind::Podman,
+        )
     } else {
         let selection = detect_compose_cmd(None);
         (selection.compose_cmd, selection.engine)

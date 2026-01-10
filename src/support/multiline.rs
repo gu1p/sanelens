@@ -388,13 +388,5 @@ fn is_level(value: &str) -> bool {
 
 const LEADING_TOKEN_LIMIT: usize = 5;
 const LEVELS: [&str; 9] = [
-    "TRACE",
-    "DEBUG",
-    "INFO",
-    "WARN",
-    "WARNING",
-    "ERROR",
-    "FATAL",
-    "CRITICAL",
-    "PANIC",
+    "TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "FATAL", "CRITICAL", "PANIC",
 ];
