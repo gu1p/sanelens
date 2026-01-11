@@ -81,6 +81,10 @@ impl Engine {
         matches!(self.kind, EngineKind::Podman) && !detach_requested
     }
 
+    pub const fn is_podman(&self) -> bool {
+        matches!(self.kind, EngineKind::Podman)
+    }
+
     pub fn collect_container_ids(&self, project_name: &str, scope: Scope) -> Vec<String> {
         match self.kind {
             EngineKind::Podman => {

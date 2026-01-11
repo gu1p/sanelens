@@ -100,22 +100,33 @@ const fn display_engine(kind: EngineKind) -> &'static str {
 }
 
 fn detect_podman_compose_cmd() -> Option<Vec<String>> {
-    if command_exists("podman")
-        && run_status(&[
-            "podman".to_string(),
-            "compose".to_string(),
-            "version".to_string(),
-        ])
-    {
-        let mut cmd = vec!["podman".to_string()];
-        if let Ok(conn) = env::var("PODMAN_CONNECTION") {
-            cmd.push("--connection".to_string());
-            cmd.push(conn);
-        }
-        cmd.push("compose".to_string());
-        return Some(cmd);
+    if !command_exists("podman") {
+        return None;
     }
-    None
+    let mut probe = vec!["podman".to_string()];
+    if let Ok(conn) = env::var("PODMAN_CONNECTION") {
+        probe.push("--connection".to_string());
+        probe.push(conn);
+    }
+    probe.push("compose".to_string());
+    probe.push("version".to_string());
+    let output = run_output(&probe).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if let Some(provider) = extract_external_compose_provider(&stderr) {
+        if command_exists(&provider) {
+            return Some(vec![provider]);
+        }
+    }
+    let mut cmd = vec!["podman".to_string()];
+    if let Ok(conn) = env::var("PODMAN_CONNECTION") {
+        cmd.push("--connection".to_string());
+        cmd.push(conn);
+    }
+    cmd.push("compose".to_string());
+    Some(cmd)
 }
 
 fn detect_docker_compose_cmd() -> Option<Vec<String>> {
@@ -129,6 +140,14 @@ fn detect_docker_compose_cmd() -> Option<Vec<String>> {
         return Some(vec!["docker".to_string(), "compose".to_string()]);
     }
     None
+}
+
+fn extract_external_compose_provider(stderr: &str) -> Option<String> {
+    let marker = "Executing external compose provider \"";
+    let start = stderr.find(marker)? + marker.len();
+    let rest = &stderr[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 pub fn collect_podman_container_ids(

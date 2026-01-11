@@ -12,6 +12,8 @@
 
   let container: HTMLDivElement | null = null;
   let lastCount = 0;
+  let lastAutoScroll = false;
+  let lastLogsRef: LogEvent[] | null = null;
 
   const attachContainer: Attachment<HTMLDivElement> = (node) => {
     container = node;
@@ -26,10 +28,14 @@
     if (!container) {
       return;
     }
-    if (autoScroll && logs.length !== lastCount) {
+    const logsChanged = logs !== lastLogsRef || logs.length !== lastCount;
+    const shouldScroll = autoScroll && (logsChanged || !lastAutoScroll);
+    if (shouldScroll) {
       container.scrollTop = container.scrollHeight;
     }
+    lastAutoScroll = autoScroll;
     lastCount = logs.length;
+    lastLogsRef = logs;
   });
 </script>
 

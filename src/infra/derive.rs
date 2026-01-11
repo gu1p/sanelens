@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde_yaml::{Mapping, Value};
 
+use crate::infra::process::run_output;
+use crate::support::args::{extract_compose_global_args, has_project_name};
+
 #[derive(Clone)]
 pub struct DerivedCompose {
     pub path: PathBuf,
@@ -14,9 +17,14 @@ pub struct DerivedCompose {
 }
 
 #[derive(Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DeriveConfig {
     pub envoy_image: String,
     pub enable_egress: bool,
+    pub compose_cmd: Vec<String>,
+    pub compose_args: Vec<String>,
+    pub compose_file_from_args: bool,
+    pub disable_pods: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -33,16 +41,16 @@ pub fn derive_compose(
 ) -> Result<DerivedCompose, String> {
     let compose_path = to_absolute_path(compose_file)
         .map_err(|err| format!("failed to resolve compose path: {err}"))?;
-    let contents = fs::read_to_string(&compose_path)
-        .map_err(|err| format!("failed to read compose file: {err}"))?;
-    let mut doc: Value =
-        serde_yaml::from_str(&contents).map_err(|err| format!("invalid compose yaml: {err}"))?;
+    let mut doc = load_compose_doc(&compose_path, project_name, config)?;
     let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
     let out_dir = compose_dir.join(".sanelens").join(project_name);
     let envoy_dir = out_dir.join("envoy");
     fs::create_dir_all(&envoy_dir).map_err(|err| format!("failed to create derived dir: {err}"))?;
 
     rewrite_top_level_paths(&mut doc, compose_dir);
+    if config.disable_pods {
+        disable_podman_pods(&mut doc);
+    }
 
     let mut new_services = Mapping::new();
     let mut proxy_services = HashSet::new();
@@ -134,7 +142,7 @@ pub fn derive_compose(
             port_modes.push((*port, mode));
         }
 
-        let app_name = format!("{name}_app");
+        let app_name = format!("{name}-app");
         app_service_map.insert(app_name.clone(), name.clone());
         proxy_app_map.insert(name.clone(), app_name.clone());
 
@@ -165,6 +173,9 @@ pub fn derive_compose(
             Value::String("image".to_string()),
             Value::String(config.envoy_image.clone()),
         );
+        if config.disable_pods {
+            add_envoy_entrypoint(&mut proxy_service);
+        }
         if let Some(restart) = service.get(Value::String("restart".to_string())) {
             proxy_service.insert(Value::String("restart".to_string()), restart.clone());
         }
@@ -206,6 +217,7 @@ pub fn derive_compose(
             &config.envoy_image,
             &network_names,
             &envoy_dir.join("egress.yaml"),
+            config.disable_pods,
         );
         let egress_envoy = envoy_dir.join("egress.yaml");
         write_egress_envoy_config(&egress_envoy)
@@ -214,7 +226,7 @@ pub fn derive_compose(
         proxy_services.insert(egress_name);
     }
 
-    for (_, value) in new_services.iter_mut() {
+    for (_, value) in &mut new_services {
         let Value::Mapping(service) = value else {
             continue;
         };
@@ -241,6 +253,44 @@ pub fn derive_compose(
     })
 }
 
+fn load_compose_doc(
+    compose_path: &Path,
+    project_name: &str,
+    config: &DeriveConfig,
+) -> Result<Value, String> {
+    if config.compose_cmd.is_empty() {
+        return Err("compose command is empty".to_string());
+    }
+    let mut cmd = config.compose_cmd.clone();
+    let mut args = extract_compose_global_args(&config.compose_args);
+    if !has_project_name(&config.compose_args) {
+        args.push("-p".to_string());
+        args.push(project_name.to_string());
+    }
+    if !config.compose_file_from_args {
+        args.push("-f".to_string());
+        args.push(compose_path.to_string_lossy().into_owned());
+    }
+    cmd.extend(args);
+    cmd.push("config".to_string());
+
+    let output = run_output(&cmd).map_err(|err| format!("compose config failed: {err}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            return Err("compose config failed".to_string());
+        }
+        return Err(format!("compose config failed: {stderr}"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let payload = stdout.trim();
+    if payload.is_empty() {
+        return Err("compose config returned empty output".to_string());
+    }
+    serde_yaml::from_str(payload).map_err(|err| format!("invalid compose config yaml: {err}"))
+}
+
 fn build_proxy_depends_on(app_name: &str) -> Value {
     let mut map = Mapping::new();
     map.insert(
@@ -250,10 +300,7 @@ fn build_proxy_depends_on(app_name: &str) -> Value {
     Value::Mapping(map)
 }
 
-fn rewrite_depends_on_for_proxies(
-    service: &mut Mapping,
-    proxy_app_map: &HashMap<String, String>,
-) {
+fn rewrite_depends_on_for_proxies(service: &mut Mapping, proxy_app_map: &HashMap<String, String>) {
     let depends_key = Value::String("depends_on".to_string());
     let Some(depends) = service.get_mut(&depends_key) else {
         return;
@@ -274,7 +321,7 @@ fn rewrite_depends_on_for_proxies(
         }
     }
     for (old, new, config) in replacements {
-        depends_map.remove(&Value::String(old));
+        depends_map.remove(Value::String(old));
         depends_map.insert(Value::String(new), config);
     }
 }
@@ -478,12 +525,43 @@ fn parse_container_port(entry: &str) -> Option<u16> {
     if entry.is_empty() {
         return None;
     }
-    let parts: Vec<&str> = entry.split(':').collect();
-    let port_str = parts.last().copied().unwrap_or("");
+    let port_str = find_container_port_separator(entry)
+        .map_or(entry, |idx| entry.get(idx + 1..).unwrap_or(""));
+    let port_str = port_str.trim();
     if port_str.is_empty() {
         return None;
     }
     parse_port_token(port_str)
+}
+
+fn find_container_port_separator(entry: &str) -> Option<usize> {
+    let mut in_env = false;
+    let mut in_brackets = false;
+    let mut last_colon = None;
+    let mut chars = entry.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        match ch {
+            '[' if !in_env => {
+                in_brackets = true;
+            }
+            ']' if !in_env => {
+                in_brackets = false;
+            }
+            '$' if !in_env => {
+                if matches!(chars.peek(), Some((_, '{'))) {
+                    in_env = true;
+                }
+            }
+            '}' if in_env => {
+                in_env = false;
+            }
+            ':' if !in_env && !in_brackets => {
+                last_colon = Some(idx);
+            }
+            _ => {}
+        }
+    }
+    last_colon
 }
 
 fn parse_port_token(token: &str) -> Option<u16> {
@@ -494,7 +572,9 @@ fn parse_port_token(token: &str) -> Option<u16> {
     if let Ok(port) = token.parse::<u16>() {
         return Some(port);
     }
-    let inner = token.strip_prefix("${").and_then(|rest| rest.strip_suffix('}'))?;
+    let inner = token
+        .strip_prefix("${")
+        .and_then(|rest| rest.strip_suffix('}'))?;
     let default = if let Some((_, default)) = inner.split_once(":-") {
         default
     } else if let Some((_, default)) = inner.split_once('-') {
@@ -517,12 +597,57 @@ fn guess_protocol(port: u16) -> ProxyProtocol {
     }
 }
 
-fn build_egress_service(envoy_image: &str, networks: &[String], config_path: &Path) -> Value {
+#[cfg(test)]
+#[allow(clippy::literal_string_with_formatting_args)]
+mod tests {
+    use super::parse_container_port;
+
+    #[test]
+    fn parse_container_port_plain() {
+        assert_eq!(parse_container_port("8080"), Some(8080));
+        assert_eq!(parse_container_port("8080/tcp"), Some(8080));
+    }
+
+    #[test]
+    fn parse_container_port_host_mapping() {
+        assert_eq!(parse_container_port("127.0.0.1:3000:80"), Some(80));
+        assert_eq!(parse_container_port("0.0.0.0:3000:8080/udp"), Some(8080));
+    }
+
+    #[test]
+    fn parse_container_port_env_defaults() {
+        assert_eq!(
+            parse_container_port("${HOST_PORT:-8080}:${PORT:-3000}"),
+            Some(3000)
+        );
+        assert_eq!(parse_container_port("${PORT:-3000}"), Some(3000));
+        assert_eq!(parse_container_port("${PORT-3000}"), Some(3000));
+    }
+
+    #[test]
+    fn parse_container_port_ipv6() {
+        assert_eq!(parse_container_port("[::1]:3000:80"), Some(80));
+        assert_eq!(
+            parse_container_port("[::1]:${HOST_PORT:-3000}:${PORT:-80}"),
+            Some(80)
+        );
+    }
+}
+
+fn build_egress_service(
+    envoy_image: &str,
+    networks: &[String],
+    config_path: &Path,
+    override_entrypoint: bool,
+) -> Value {
     let mut map = Mapping::new();
     map.insert(
         Value::String("image".to_string()),
         Value::String(envoy_image.to_string()),
     );
+    if override_entrypoint {
+        add_envoy_entrypoint(&mut map);
+    }
     let config_path_display = config_path.to_string_lossy();
     map.insert(
         Value::String("volumes".to_string()),
@@ -540,6 +665,20 @@ fn build_egress_service(envoy_image: &str, networks: &[String], config_path: &Pa
     add_label(&mut map, "sanelens.proxy", "true");
     add_label(&mut map, "sanelens.proxy.egress", "true");
     Value::Mapping(map)
+}
+
+fn add_envoy_entrypoint(service: &mut Mapping) {
+    service.insert(
+        Value::String("entrypoint".to_string()),
+        Value::Sequence(vec![Value::String("envoy".to_string())]),
+    );
+    service.insert(
+        Value::String("command".to_string()),
+        Value::Sequence(vec![
+            Value::String("-c".to_string()),
+            Value::String("/etc/envoy/envoy.yaml".to_string()),
+        ]),
+    );
 }
 
 fn collect_network_names(doc: &Value) -> Vec<String> {
@@ -560,6 +699,21 @@ fn rewrite_top_level_paths(doc: &mut Value, base_dir: &Path) {
     }
     if let Some(Value::Mapping(map)) = doc.get_mut("secrets") {
         rewrite_named_file_entries(map, base_dir);
+    }
+}
+
+fn disable_podman_pods(doc: &mut Value) {
+    let Value::Mapping(map) = doc else {
+        return;
+    };
+    let key = Value::String("x-podman".to_string());
+    let in_pod_key = Value::String("in_pod".to_string());
+    if let Some(Value::Mapping(x_podman)) = map.get_mut(&key) {
+        x_podman.insert(in_pod_key, Value::Bool(false));
+    } else {
+        let mut x_podman = Mapping::new();
+        x_podman.insert(in_pod_key, Value::Bool(false));
+        map.insert(key, Value::Mapping(x_podman));
     }
 }
 
@@ -888,6 +1042,8 @@ fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
                 name: egress_cache
                 dns_lookup_family: V4_ONLY
           - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
           access_log:
           - name: envoy.access_loggers.stdout
             typed_config:
@@ -927,7 +1083,7 @@ admin:
 
 fn http_listener_block(service_name: &str, app_name: &str, port: u16) -> String {
     format!(
-        "  - name: {service_name}_listener_{port}\n    address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: {port}\n    filter_chains:\n    - filters:\n      - name: envoy.filters.network.http_connection_manager\n        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n          stat_prefix: ingress_http_{port}\n          codec_type: AUTO\n          route_config:\n            name: route_{port}\n            virtual_hosts:\n            - name: backend\n              domains: [\"*\"]\n              routes:\n              - match:\n                  prefix: \"/\"\n                route:\n                  cluster: {app_name}_{port}\n          http_filters:\n          - name: envoy.filters.http.router\n          access_log:\n          - name: envoy.access_loggers.stdout\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n              log_format:\n                json_format:\n                  timestamp: \"%START_TIME%\"\n                  method: \"%REQ(:METHOD)%\"\n                  path: \"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%\"\n                  protocol: \"%PROTOCOL%\"\n                  response_code: \"%RESPONSE_CODE%\"\n                  duration_ms: \"%DURATION%\"\n                  downstream_remote_address: \"%DOWNSTREAM_REMOTE_ADDRESS%\"\n                  upstream_host: \"%UPSTREAM_HOST%\"\n                  bytes_received: \"%BYTES_RECEIVED%\"\n                  bytes_sent: \"%BYTES_SENT%\"\n                  request_id: \"%REQ(X-REQUEST-ID)%\"\n",
+        "  - name: {service_name}_listener_{port}\n    address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: {port}\n    filter_chains:\n    - filters:\n      - name: envoy.filters.network.http_connection_manager\n        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n          stat_prefix: ingress_http_{port}\n          codec_type: AUTO\n          route_config:\n            name: route_{port}\n            virtual_hosts:\n            - name: backend\n              domains: [\"*\"]\n              routes:\n              - match:\n                  prefix: \"/\"\n                route:\n                  cluster: {app_name}_{port}\n          http_filters:\n          - name: envoy.filters.http.router\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router\n          access_log:\n          - name: envoy.access_loggers.stdout\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n              log_format:\n                json_format:\n                  timestamp: \"%START_TIME%\"\n                  method: \"%REQ(:METHOD)%\"\n                  path: \"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%\"\n                  protocol: \"%PROTOCOL%\"\n                  response_code: \"%RESPONSE_CODE%\"\n                  duration_ms: \"%DURATION%\"\n                  downstream_remote_address: \"%DOWNSTREAM_REMOTE_ADDRESS%\"\n                  upstream_host: \"%UPSTREAM_HOST%\"\n                  bytes_received: \"%BYTES_RECEIVED%\"\n                  bytes_sent: \"%BYTES_SENT%\"\n                  request_id: \"%REQ(X-REQUEST-ID)%\"\n",
     )
 }
 

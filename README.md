@@ -88,7 +88,6 @@ Passing `--force-recreate` to `up` forces containers to be recreated, and can be
 - `COMPOSE_LOG_TIMESTAMPS`: set to `0/false/no` to disable log timestamps
 - `COMPOSE_DEFAULT_BUILD`: set to `0/false/no` to skip auto `--build` on `up`
 - `COMPOSE_DEFAULT_REMOVE_ORPHANS`: set to `0/false/no` to skip auto `--remove-orphans` on `up`/`down`
-- `SANELENS_TRAFFIC`: set to `0/false/no` to disable traffic capture (enabled by default)
 - `SANELENS_EGRESS_PROXY`: set to `1/true/yes` to enable best-effort egress capture via HTTP(S) proxy
 - `SANELENS_ENVOY_IMAGE`: override the Envoy image used for proxies
 

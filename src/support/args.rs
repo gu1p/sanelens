@@ -167,6 +167,43 @@ pub fn extract_compose_file_arg(args: &[String]) -> Option<String> {
     found
 }
 
+pub fn extract_compose_global_args(args: &[String]) -> Vec<String> {
+    let mut extracted = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if matches!(
+            arg.as_str(),
+            "-f" | "--file"
+                | "--env-file"
+                | "--project-directory"
+                | "--profile"
+                | "-p"
+                | "--project-name"
+                | "--in-pod"
+        ) {
+            if let Some(value) = iter.next() {
+                extracted.push(arg.clone());
+                extracted.push(value.clone());
+            }
+            continue;
+        }
+        if arg.starts_with("--file=")
+            || arg.starts_with("-f=")
+            || arg.starts_with("--env-file=")
+            || arg.starts_with("--project-directory=")
+            || arg.starts_with("--profile=")
+            || arg.starts_with("--project-name=")
+            || arg.starts_with("--in-pod=")
+        {
+            extracted.push(arg.clone());
+        }
+    }
+    extracted
+}
+
 pub fn strip_compose_file_args(args: &[String]) -> Vec<String> {
     let mut updated = Vec::with_capacity(args.len());
     let mut iter = args.iter();

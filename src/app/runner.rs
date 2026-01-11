@@ -183,6 +183,10 @@ impl ComposeRunner {
         let config = DeriveConfig {
             envoy_image,
             enable_egress: is_env_truthy("SANELENS_EGRESS_PROXY"),
+            compose_cmd: self.compose_cmd.clone(),
+            compose_args: self.compose_args.clone(),
+            compose_file_from_args: self.compose_file_from_args,
+            disable_pods: self.engine.is_podman(),
         };
         match derive_compose(&self.original_compose_file, &self.project_name, &config) {
             Ok(derived) => self.apply_derived_compose(derived),
@@ -744,7 +748,7 @@ impl LogFollower {
         while !self.stop_event.load(Ordering::SeqCst) {
             let ids = self
                 .engine
-                .collect_container_ids(&self.project_name, Scope::All);
+                .collect_container_ids(&self.project_name, Scope::Running);
             if !ids.is_empty() {
                 return ids;
             }
@@ -779,7 +783,7 @@ impl TrafficFollower {
         if self.proxy_services.is_empty() {
             return 0;
         }
-        let ids = self.wait_for_container_ids();
+        let ids = self.wait_for_proxy_container_ids();
         if ids.is_empty() {
             return 1;
         }
@@ -842,6 +846,30 @@ impl TrafficFollower {
         workers
     }
 
+    fn wait_for_proxy_container_ids(&self) -> Vec<String> {
+        while !self.stop_event.load(Ordering::SeqCst) {
+            let ids = self
+                .engine
+                .collect_container_ids(&self.project_name, Scope::All);
+            if ids.is_empty() {
+                thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            let proxy_ids: Vec<String> = ids
+                .into_iter()
+                .filter(|cid| {
+                    let service = self.engine.resolve_service_name(&self.project_name, cid);
+                    self.proxy_services.contains(&service)
+                })
+                .collect();
+            if !proxy_ids.is_empty() {
+                return proxy_ids;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        Vec::new()
+    }
+
     fn spawn_traffic_worker<R: Read + Send + 'static>(
         reader: R,
         context: TrafficWorkerContext,
@@ -851,19 +879,6 @@ impl TrafficFollower {
             traffic_log_worker(reader, context);
         });
         workers.push(thread);
-    }
-
-    fn wait_for_container_ids(&self) -> Vec<String> {
-        while !self.stop_event.load(Ordering::SeqCst) {
-            let ids = self
-                .engine
-                .collect_container_ids(&self.project_name, Scope::All);
-            if !ids.is_empty() {
-                return ids;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-        Vec::new()
     }
 }
 

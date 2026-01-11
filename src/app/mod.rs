@@ -12,7 +12,7 @@ use crate::infra::compose::detect_compose_cmd;
 use crate::infra::engine::Engine;
 use crate::support::args::{
     compose_name_from_file, derive_project_name, extract_compose_file_arg, extract_engine_arg,
-    extract_traffic_arg, first_compose_file, is_env_false, is_env_truthy,
+    extract_traffic_arg, first_compose_file,
 };
 
 pub fn run() -> ExitCode {
@@ -116,10 +116,7 @@ fn resolve_project_name(compose_file: &str) -> String {
 }
 
 fn traffic_enabled(traffic_override: Option<bool>) -> bool {
-    traffic_override.map_or_else(
-        || !is_env_false("SANELENS_TRAFFIC") || is_env_truthy("SANELENS_TRAFFIC"),
-        |value| value,
-    )
+    traffic_override.unwrap_or(true)
 }
 
 fn setup_signals(runner: &runner::ComposeRunner) {
