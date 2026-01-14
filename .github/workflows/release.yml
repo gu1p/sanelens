@@ -75,7 +75,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: .
           merge-multiple: true
       - name: Publish release
         uses: softprops/action-gh-release@v2
