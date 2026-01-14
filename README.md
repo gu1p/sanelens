@@ -8,7 +8,8 @@ stream-friendly log output while keeping Compose's CLI behavior.
 - Works with `podman compose` and `docker compose`
 - Opens a local log UI on `up` (can be disabled)
 - Colored, prefixed service logs with optional timestamps
-- Adds `--build` on `up` and `--remove-orphans` on `up`/`down` unless explicitly disabled
+- Adds `--remove-orphans` on `up`/`down` unless explicitly disabled
+- Optional default `--build` on `up` when `COMPOSE_DEFAULT_BUILD` is enabled
 - Optional traffic view with per-endpoint summaries via Envoy sidecar proxies
 
 ## Install
@@ -89,7 +90,7 @@ Passing `--force-recreate` to `up` forces containers to be recreated, and can be
 - `COMPOSE_LOG_UI`: set to `0/false/no` to disable the log UI
 - `COMPOSE_LOG_COLOR`: set to `0/false/no` to disable log colors
 - `COMPOSE_LOG_TIMESTAMPS`: set to `0/false/no` to disable log timestamps
-- `COMPOSE_DEFAULT_BUILD`: set to `0/false/no` to skip auto `--build` on `up`
+- `COMPOSE_DEFAULT_BUILD`: set to `1/true/yes` to auto `--build` on `up`
 - `COMPOSE_DEFAULT_REMOVE_ORPHANS`: set to `0/false/no` to skip auto `--remove-orphans` on `up`/`down`
 - `SANELENS_EGRESS_PROXY`: set to `1/true/yes` to enable best-effort egress capture via HTTP(S) proxy
 - `SANELENS_ENVOY_IMAGE`: override the Envoy image used for proxies

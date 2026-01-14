@@ -357,7 +357,7 @@ impl ComposeRunner {
             if !plan.no_cache_requested
                 && !has_flag(&self.compose_args, &["--build"])
                 && !has_flag(&self.compose_args, &["--no-build"])
-                && !is_env_false("COMPOSE_DEFAULT_BUILD")
+                && is_env_truthy("COMPOSE_DEFAULT_BUILD")
             {
                 self.compose_args.push("--build".to_string());
             }
