@@ -178,6 +178,72 @@ pub fn collect_podman_container_ids(
     list
 }
 
+pub fn collect_podman_container_ids_by_label(
+    podman_cmd: &[String],
+    label_key: &str,
+    label_value: &str,
+    scope: Scope,
+) -> Vec<String> {
+    let mut cmd = build_podman_ps_cmd(podman_cmd, scope);
+    cmd.push("--filter".to_string());
+    cmd.push(format!("label={label_key}={label_value}"));
+    cmd.push("-q".to_string());
+    let mut ids = Vec::new();
+    if let Ok(output) = run_output(&cmd) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+            ids.push(line.trim().to_string());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+pub fn collect_podman_container_ids_by_labels(
+    podman_cmd: &[String],
+    labels: &[(&str, &str)],
+    scope: Scope,
+) -> Vec<String> {
+    let mut cmd = build_podman_ps_cmd(podman_cmd, scope);
+    for (key, value) in labels {
+        cmd.push("--filter".to_string());
+        cmd.push(format!("label={key}={value}"));
+    }
+    cmd.push("-q".to_string());
+    let mut ids = Vec::new();
+    if let Ok(output) = run_output(&cmd) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+            ids.push(line.trim().to_string());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+pub fn collect_podman_container_ids_by_label_key(
+    podman_cmd: &[String],
+    label_key: &str,
+    scope: Scope,
+) -> Vec<String> {
+    let mut cmd = build_podman_ps_cmd(podman_cmd, scope);
+    cmd.push("--filter".to_string());
+    cmd.push(format!("label={label_key}"));
+    cmd.push("-q".to_string());
+    let mut ids = Vec::new();
+    if let Ok(output) = run_output(&cmd) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+            ids.push(line.trim().to_string());
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 fn build_podman_ps_cmd(podman_cmd: &[String], scope: Scope) -> Vec<String> {
     let mut cmd = podman_cmd.to_vec();
     cmd.push("ps".to_string());
@@ -187,9 +253,10 @@ fn build_podman_ps_cmd(podman_cmd: &[String], scope: Scope) -> Vec<String> {
     cmd
 }
 
-pub fn collect_docker_container_ids(
+pub fn collect_docker_container_ids_by_label(
     docker_cmd: &[String],
-    project_name: &str,
+    label_key: &str,
+    label_value: &str,
     scope: Scope,
 ) -> Vec<String> {
     let mut cmd = docker_cmd.to_vec();
@@ -198,7 +265,63 @@ pub fn collect_docker_container_ids(
         cmd.push("-a".to_string());
     }
     cmd.push("--filter".to_string());
-    cmd.push(format!("label=com.docker.compose.project={project_name}"));
+    cmd.push(format!("label={label_key}={label_value}"));
+    cmd.push("-q".to_string());
+    let mut ids = Vec::new();
+    if let Ok(output) = run_output(&cmd) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if !line.trim().is_empty() {
+                ids.push(line.trim().to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+pub fn collect_docker_container_ids_by_labels(
+    docker_cmd: &[String],
+    labels: &[(&str, &str)],
+    scope: Scope,
+) -> Vec<String> {
+    let mut cmd = docker_cmd.to_vec();
+    cmd.push("ps".to_string());
+    if matches!(scope, Scope::All) {
+        cmd.push("-a".to_string());
+    }
+    for (key, value) in labels {
+        cmd.push("--filter".to_string());
+        cmd.push(format!("label={key}={value}"));
+    }
+    cmd.push("-q".to_string());
+    let mut ids = Vec::new();
+    if let Ok(output) = run_output(&cmd) {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if !line.trim().is_empty() {
+                ids.push(line.trim().to_string());
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+pub fn collect_docker_container_ids_by_label_key(
+    docker_cmd: &[String],
+    label_key: &str,
+    scope: Scope,
+) -> Vec<String> {
+    let mut cmd = docker_cmd.to_vec();
+    cmd.push("ps".to_string());
+    if matches!(scope, Scope::All) {
+        cmd.push("-a".to_string());
+    }
+    cmd.push("--filter".to_string());
+    cmd.push(format!("label={label_key}"));
     cmd.push("-q".to_string());
     let mut ids = Vec::new();
     if let Ok(output) = run_output(&cmd) {

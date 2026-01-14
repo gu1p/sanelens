@@ -112,6 +112,10 @@ pub struct HttpObservation {
     pub duration_ms: Option<u64>,
     pub bytes_in: Option<u64>,
     pub bytes_out: Option<u64>,
+    pub request_headers: BTreeMap<String, String>,
+    pub response_headers: BTreeMap<String, String>,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
     pub correlation: Correlation,
     pub attrs: ObservationAttrs,
 }
@@ -130,6 +134,25 @@ pub struct FlowObservation {
 pub enum Observation {
     Flow(FlowObservation),
     Http(HttpObservation),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TrafficCall {
+    pub seq: u64,
+    pub at_ms: u64,
+    pub peer: Peer,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub status: Option<u16>,
+    pub duration_ms: Option<u64>,
+    pub bytes_in: Option<u64>,
+    pub bytes_out: Option<u64>,
+    pub request_headers: BTreeMap<String, String>,
+    pub response_headers: BTreeMap<String, String>,
+    pub request_body: Option<String>,
+    pub response_body: Option<String>,
+    pub correlation: Correlation,
+    pub attrs: ObservationAttrs,
 }
 
 #[allow(clippy::struct_excessive_bools)]

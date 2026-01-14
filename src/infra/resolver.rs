@@ -12,10 +12,10 @@ pub struct RuntimeResolver {
 impl RuntimeResolver {
     pub fn from_engine(
         engine: &Engine,
-        project_name: &str,
+        run_id: &str,
         service_aliases: &HashMap<String, String>,
     ) -> Self {
-        let ids = engine.collect_container_ids(project_name, Scope::Running);
+        let ids = engine.collect_run_container_ids(run_id, Scope::Running);
         let containers = engine.inspect_containers(&ids);
         Self {
             ip_map: build_ip_map(containers, service_aliases),

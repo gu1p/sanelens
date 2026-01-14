@@ -2,15 +2,20 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde_yaml::{Mapping, Value};
 
-use crate::infra::process::run_output;
-use crate::support::args::{extract_compose_global_args, has_project_name};
+use crate::support::args::extract_compose_global_args;
+use crate::support::constants::{
+    COMPOSE_FILE_LABEL, DERIVED_COMPOSE_LABEL, PROJECT_NAME_LABEL, RUN_ID_LABEL, SERVICE_LABEL,
+    STARTED_AT_LABEL,
+};
 
 #[derive(Clone)]
 pub struct DerivedCompose {
     pub path: PathBuf,
+    pub run_dir: PathBuf,
     pub proxy_services: HashSet<String>,
     pub app_service_map: HashMap<String, String>,
     pub egress_proxy: Option<String>,
@@ -19,7 +24,10 @@ pub struct DerivedCompose {
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct DeriveConfig {
+    pub run_id: String,
+    pub run_started_at: String,
     pub envoy_image: String,
+    pub enable_traffic: bool,
     pub enable_egress: bool,
     pub compose_cmd: Vec<String>,
     pub compose_args: Vec<String>,
@@ -33,6 +41,14 @@ enum ProxyProtocol {
     Tcp,
 }
 
+struct RunLabelContext<'a> {
+    run_id: &'a str,
+    compose_file: &'a str,
+    derived_compose: &'a str,
+    started_at: &'a str,
+    project_name: &'a str,
+}
+
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 pub fn derive_compose(
     compose_file: &str,
@@ -42,31 +58,74 @@ pub fn derive_compose(
     let compose_path = to_absolute_path(compose_file)
         .map_err(|err| format!("failed to resolve compose path: {err}"))?;
     let mut doc = load_compose_doc(&compose_path, project_name, config)?;
+    set_compose_name(&mut doc, project_name);
     let compose_dir = compose_path.parent().unwrap_or_else(|| Path::new("."));
     let out_dir = compose_dir.join(".sanelens").join(project_name);
-    let envoy_dir = out_dir.join("envoy");
-    fs::create_dir_all(&envoy_dir).map_err(|err| format!("failed to create derived dir: {err}"))?;
+    fs::create_dir_all(&out_dir).map_err(|err| format!("failed to create derived dir: {err}"))?;
+    let compose_file_label = compose_path.to_string_lossy().into_owned();
+    let derived_path = out_dir.join("compose.derived.yaml");
+    let derived_compose_label = derived_path.to_string_lossy().into_owned();
+    let run_labels = RunLabelContext {
+        run_id: &config.run_id,
+        compose_file: &compose_file_label,
+        derived_compose: &derived_compose_label,
+        started_at: &config.run_started_at,
+        project_name,
+    };
 
     rewrite_top_level_paths(&mut doc, compose_dir);
     if config.disable_pods {
         disable_podman_pods(&mut doc);
     }
 
-    let mut new_services = Mapping::new();
-    let mut proxy_services = HashSet::new();
-    let mut app_service_map = HashMap::new();
-    let mut proxy_app_map = HashMap::new();
-    let network_names = collect_network_names(&doc);
+    let network_names = if config.enable_traffic {
+        collect_network_names(&doc)
+    } else {
+        Vec::new()
+    };
+    let service_names = if config.enable_traffic {
+        collect_service_names(&doc)?
+    } else {
+        Vec::new()
+    };
+
     let Some(Value::Mapping(services)) = doc.get_mut("services") else {
         return Err("compose file missing services".to_string());
     };
 
-    let mut service_names: Vec<String> = services
-        .keys()
-        .filter_map(|key| key.as_str().map(ToString::to_string))
-        .collect();
-    service_names.sort();
+    if !config.enable_traffic {
+        for (name, service_value) in services.iter_mut() {
+            let Some(service_name) = name.as_str() else {
+                continue;
+            };
+            let Value::Mapping(service) = service_value else {
+                continue;
+            };
+            rewrite_service_paths(service, compose_dir);
+            add_run_labels(service, service_name, &run_labels);
+        }
+        let payload = serde_yaml::to_string(&doc)
+            .map_err(|err| format!("serialize compose failed: {err}"))?;
+        fs::write(&derived_path, payload)
+            .map_err(|err| format!("write derived compose failed: {err}"))?;
+        return Ok(DerivedCompose {
+            path: derived_path,
+            run_dir: out_dir,
+            proxy_services: HashSet::new(),
+            app_service_map: HashMap::new(),
+            egress_proxy: None,
+        });
+    }
 
+    let envoy_dir = out_dir.join("envoy");
+    fs::create_dir_all(&envoy_dir).map_err(|err| format!("failed to create derived dir: {err}"))?;
+    let tap_dir = out_dir.join("tap");
+    fs::create_dir_all(&tap_dir).map_err(|err| format!("failed to create tap dir: {err}"))?;
+
+    let mut new_services = Mapping::new();
+    let mut proxy_services = HashSet::new();
+    let mut app_service_map = HashMap::new();
+    let mut proxy_app_map = HashMap::new();
     let mut no_proxy_hosts = Vec::new();
     for name in &service_names {
         no_proxy_hosts.push(name.clone());
@@ -88,6 +147,7 @@ pub fn derive_compose(
         rewrite_service_paths(&mut service, compose_dir);
         let network_mode = get_string(&service, "network_mode");
         if network_mode.as_deref() == Some("host") || network_mode.as_deref() == Some("none") {
+            add_run_labels(&mut service, &name, &run_labels);
             new_services.insert(key, Value::Mapping(service));
             continue;
         }
@@ -106,6 +166,7 @@ pub fn derive_compose(
                 );
                 merge_env_var(&mut service, "NO_PROXY", &no_proxy_value);
             }
+            add_run_labels(&mut service, &name, &run_labels);
             new_services.insert(key, Value::Mapping(service));
             continue;
         }
@@ -124,6 +185,7 @@ pub fn derive_compose(
                 );
                 merge_env_var(&mut service, "NO_PROXY", &no_proxy_value);
             }
+            add_run_labels(&mut service, &name, &run_labels);
             new_services.insert(key, Value::Mapping(service));
             continue;
         }
@@ -154,6 +216,7 @@ pub fn derive_compose(
         ensure_expose_ports(&mut app_service, &ports, original_expose.as_ref());
         add_label(&mut app_service, "sanelens.app", "true");
         add_label(&mut app_service, "sanelens.app.name", &name);
+        add_run_labels(&mut app_service, &name, &run_labels);
         if config.enable_egress {
             ensure_env_var(
                 &mut app_service,
@@ -196,12 +259,18 @@ pub fn derive_compose(
         }
         let envoy_config = envoy_dir.join(format!("{name}.yaml"));
         let envoy_config_path = envoy_config.to_string_lossy();
-        let volumes_value = Value::Sequence(vec![Value::String(format!(
-            "{envoy_config_path}:/etc/envoy/envoy.yaml:ro"
-        ))]);
+        let tap_service_dir = tap_dir.join(&name);
+        fs::create_dir_all(&tap_service_dir)
+            .map_err(|err| format!("failed to create tap dir for {name}: {err}"))?;
+        let tap_service_path = tap_service_dir.to_string_lossy();
+        let volumes_value = Value::Sequence(vec![
+            Value::String(format!("{envoy_config_path}:/etc/envoy/envoy.yaml:ro")),
+            Value::String(format!("{tap_service_path}:/sanelens/tap")),
+        ]);
         proxy_service.insert(Value::String("volumes".to_string()), volumes_value);
         add_label(&mut proxy_service, "sanelens.proxy", "true");
         add_label(&mut proxy_service, "sanelens.proxy.name", &name);
+        add_run_labels(&mut proxy_service, &name, &run_labels);
 
         write_envoy_config(&envoy_dir, &name, &app_name, &port_modes)
             .map_err(|err| format!("failed to write envoy config: {err}"))?;
@@ -213,12 +282,19 @@ pub fn derive_compose(
 
     if config.enable_egress {
         let egress_name = "sanelens-egress-proxy".to_string();
-        let egress_config = build_egress_service(
+        let tap_service_dir = tap_dir.join(&egress_name);
+        fs::create_dir_all(&tap_service_dir)
+            .map_err(|err| format!("failed to create tap dir for {egress_name}: {err}"))?;
+        let mut egress_config = build_egress_service(
             &config.envoy_image,
             &network_names,
             &envoy_dir.join("egress.yaml"),
             config.disable_pods,
+            Some(&tap_service_dir),
         );
+        if let Value::Mapping(map) = &mut egress_config {
+            add_run_labels(map, &egress_name, &run_labels);
+        }
         let egress_envoy = envoy_dir.join("egress.yaml");
         write_egress_envoy_config(&egress_envoy)
             .map_err(|err| format!("failed to write egress envoy config: {err}"))?;
@@ -235,7 +311,6 @@ pub fn derive_compose(
 
     *services = new_services;
 
-    let derived_path = out_dir.join("compose.derived.yaml");
     let payload =
         serde_yaml::to_string(&doc).map_err(|err| format!("serialize compose failed: {err}"))?;
     fs::write(&derived_path, payload)
@@ -243,6 +318,7 @@ pub fn derive_compose(
 
     Ok(DerivedCompose {
         path: derived_path,
+        run_dir: out_dir,
         proxy_services,
         app_service_map,
         egress_proxy: if config.enable_egress {
@@ -263,10 +339,8 @@ fn load_compose_doc(
     }
     let mut cmd = config.compose_cmd.clone();
     let mut args = extract_compose_global_args(&config.compose_args);
-    if !has_project_name(&config.compose_args) {
-        args.push("-p".to_string());
-        args.push(project_name.to_string());
-    }
+    args.push("-p".to_string());
+    args.push(project_name.to_string());
     if !config.compose_file_from_args {
         args.push("-f".to_string());
         args.push(compose_path.to_string_lossy().into_owned());
@@ -274,7 +348,7 @@ fn load_compose_doc(
     cmd.extend(args);
     cmd.push("config".to_string());
 
-    let output = run_output(&cmd).map_err(|err| format!("compose config failed: {err}"))?;
+    let output = run_compose_output(&cmd).map_err(|err| format!("compose config failed: {err}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stderr = stderr.trim();
@@ -289,6 +363,22 @@ fn load_compose_doc(
         return Err("compose config returned empty output".to_string());
     }
     serde_yaml::from_str(payload).map_err(|err| format!("invalid compose config yaml: {err}"))
+}
+
+fn run_compose_output(cmd: &[String]) -> std::io::Result<std::process::Output> {
+    let Some((program, args)) = cmd.split_first() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty command",
+        ));
+    };
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env_remove("COMPOSE_PROJECT_NAME")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command.output()
 }
 
 fn build_proxy_depends_on(app_name: &str) -> Value {
@@ -382,6 +472,30 @@ fn read_proxy_protocol(service: &Mapping) -> Option<String> {
 
 fn add_label(service: &mut Mapping, key: &str, value: &str) {
     let labels_key = Value::String("labels".to_string());
+    if key == STARTED_AT_LABEL {
+        let label = Value::String(format!("{key}={value}"));
+        match service.get_mut(&labels_key) {
+            Some(Value::Sequence(list)) => {
+                list.push(label);
+            }
+            Some(Value::Mapping(map)) => {
+                let mut list = Vec::with_capacity(map.len() + 1);
+                for (map_key, map_value) in map
+                    .iter()
+                    .filter_map(|(key, value)| key.as_str().map(|key| (key, value)))
+                {
+                    let map_value = label_value_string(map_value);
+                    list.push(Value::String(format!("{map_key}={map_value}")));
+                }
+                list.push(label);
+                service.insert(labels_key, Value::Sequence(list));
+            }
+            _ => {
+                service.insert(labels_key, Value::Sequence(vec![label]));
+            }
+        }
+        return;
+    }
     match service.get_mut(&labels_key) {
         Some(Value::Mapping(map)) => {
             map.insert(
@@ -401,6 +515,28 @@ fn add_label(service: &mut Mapping, key: &str, value: &str) {
             service.insert(labels_key, Value::Mapping(map));
         }
     }
+}
+
+fn label_value_string(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Number(value) => value.to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
+fn add_run_labels(service: &mut Mapping, service_name: &str, labels: &RunLabelContext<'_>) {
+    add_label(service, RUN_ID_LABEL, labels.run_id);
+    add_label(service, SERVICE_LABEL, service_name);
+    add_label(service, COMPOSE_FILE_LABEL, labels.compose_file);
+    add_label(service, DERIVED_COMPOSE_LABEL, labels.derived_compose);
+    add_label(service, STARTED_AT_LABEL, labels.started_at);
+    add_label(service, PROJECT_NAME_LABEL, labels.project_name);
 }
 
 fn ensure_env_var(service: &mut Mapping, key: &str, value: &str) {
@@ -639,6 +775,7 @@ fn build_egress_service(
     networks: &[String],
     config_path: &Path,
     override_entrypoint: bool,
+    tap_dir: Option<&Path>,
 ) -> Value {
     let mut map = Mapping::new();
     map.insert(
@@ -649,11 +786,16 @@ fn build_egress_service(
         add_envoy_entrypoint(&mut map);
     }
     let config_path_display = config_path.to_string_lossy();
+    let mut volumes = vec![Value::String(format!(
+        "{config_path_display}:/etc/envoy/envoy.yaml:ro"
+    ))];
+    if let Some(tap_dir) = tap_dir {
+        let tap_path = tap_dir.to_string_lossy();
+        volumes.push(Value::String(format!("{tap_path}:/sanelens/tap")));
+    }
     map.insert(
         Value::String("volumes".to_string()),
-        Value::Sequence(vec![Value::String(format!(
-            "{config_path_display}:/etc/envoy/envoy.yaml:ro"
-        ))]),
+        Value::Sequence(volumes),
     );
     if !networks.is_empty() {
         let list = networks
@@ -691,6 +833,28 @@ fn collect_network_names(doc: &Value) -> Vec<String> {
         }
     }
     names
+}
+
+fn collect_service_names(doc: &Value) -> Result<Vec<String>, String> {
+    let Some(Value::Mapping(services)) = doc.get("services") else {
+        return Err("compose file missing services".to_string());
+    };
+    let mut names: Vec<String> = services
+        .keys()
+        .filter_map(|key| key.as_str().map(ToString::to_string))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+fn set_compose_name(doc: &mut Value, project_name: &str) {
+    let Value::Mapping(map) = doc else {
+        return;
+    };
+    map.insert(
+        Value::String("name".to_string()),
+        Value::String(project_name.to_string()),
+    );
 }
 
 fn rewrite_top_level_paths(doc: &mut Value, base_dir: &Path) {
@@ -1008,9 +1172,7 @@ fn write_envoy_config(
     fs::write(path, body).map_err(|err| err.to_string())
 }
 
-#[allow(clippy::too_many_lines)]
-fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
-    let body = r#"static_resources:
+const EGRESS_ENVOY_CONFIG: &str = r#"static_resources:
   listeners:
   - name: egress_listener
     address:
@@ -1041,6 +1203,20 @@ fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
               dns_cache_config:
                 name: egress_cache
                 dns_lookup_family: V4_ONLY
+          - name: envoy.filters.http.tap
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.tap.v3.Tap
+              common_config:
+                static_config:
+                  match_config:
+                    any_match: true
+                  output_config:
+                    max_buffered_rx_bytes: 10485760
+                    max_buffered_tx_bytes: 10485760
+                    sinks:
+                    - format: JSON_BODY_AS_STRING
+                      file_per_tap:
+                        path_prefix: /sanelens/tap/trace
           - name: envoy.filters.http.router
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -1054,6 +1230,16 @@ fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
                   method: "%REQ(:METHOD)%"
                   path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
                   authority: "%REQ(:AUTHORITY)%"
+                  request_id: "%REQ(X-REQUEST-ID)%"
+                  request_user_agent: "%REQ(USER-AGENT)%"
+                  request_content_type: "%REQ(CONTENT-TYPE)%"
+                  request_accept: "%REQ(ACCEPT)%"
+                  request_body: "%DYNAMIC_METADATA(sanelens:request_body)%"
+                  request_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+                  request_forwarded_proto: "%REQ(X-FORWARDED-PROTO)%"
+                  response_content_type: "%RESP(CONTENT-TYPE)%"
+                  response_content_length: "%RESP(CONTENT-LENGTH)%"
+                  response_body: "%DYNAMIC_METADATA(sanelens:response_body)%"
                   response_code: "%RESPONSE_CODE%"
                   duration_ms: "%DURATION%"
                   downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
@@ -1078,12 +1264,80 @@ admin:
       address: 0.0.0.0
       port_value: 9901
 "#;
-    fs::write(path, body).map_err(|err| err.to_string())
+fn write_egress_envoy_config(path: &Path) -> Result<(), String> {
+    fs::write(path, EGRESS_ENVOY_CONFIG).map_err(|err| err.to_string())
 }
 
+#[allow(clippy::too_many_lines)]
 fn http_listener_block(service_name: &str, app_name: &str, port: u16) -> String {
     format!(
-        "  - name: {service_name}_listener_{port}\n    address:\n      socket_address:\n        address: 0.0.0.0\n        port_value: {port}\n    filter_chains:\n    - filters:\n      - name: envoy.filters.network.http_connection_manager\n        typed_config:\n          \"@type\": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager\n          stat_prefix: ingress_http_{port}\n          codec_type: AUTO\n          route_config:\n            name: route_{port}\n            virtual_hosts:\n            - name: backend\n              domains: [\"*\"]\n              routes:\n              - match:\n                  prefix: \"/\"\n                route:\n                  cluster: {app_name}_{port}\n          http_filters:\n          - name: envoy.filters.http.router\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router\n          access_log:\n          - name: envoy.access_loggers.stdout\n            typed_config:\n              \"@type\": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog\n              log_format:\n                json_format:\n                  timestamp: \"%START_TIME%\"\n                  method: \"%REQ(:METHOD)%\"\n                  path: \"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%\"\n                  protocol: \"%PROTOCOL%\"\n                  response_code: \"%RESPONSE_CODE%\"\n                  duration_ms: \"%DURATION%\"\n                  downstream_remote_address: \"%DOWNSTREAM_REMOTE_ADDRESS%\"\n                  upstream_host: \"%UPSTREAM_HOST%\"\n                  bytes_received: \"%BYTES_RECEIVED%\"\n                  bytes_sent: \"%BYTES_SENT%\"\n                  request_id: \"%REQ(X-REQUEST-ID)%\"\n",
+        r#"  - name: {service_name}_listener_{port}
+    address:
+      socket_address:
+        address: 0.0.0.0
+        port_value: {port}
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: ingress_http_{port}
+          codec_type: AUTO
+          route_config:
+            name: route_{port}
+            virtual_hosts:
+            - name: backend
+              domains: ["*"]
+              routes:
+              - match:
+                  prefix: "/"
+                route:
+                  cluster: {app_name}_{port}
+          http_filters:
+          - name: envoy.filters.http.tap
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.tap.v3.Tap
+              common_config:
+                static_config:
+                  match_config:
+                    any_match: true
+                  output_config:
+                    max_buffered_rx_bytes: 10485760
+                    max_buffered_tx_bytes: 10485760
+                    sinks:
+                    - format: JSON_BODY_AS_STRING
+                      file_per_tap:
+                        path_prefix: /sanelens/tap/trace
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                json_format:
+                  timestamp: "%START_TIME%"
+                  method: "%REQ(:METHOD)%"
+                  path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                  protocol: "%PROTOCOL%"
+                  response_code: "%RESPONSE_CODE%"
+                  duration_ms: "%DURATION%"
+                  downstream_remote_address: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                  upstream_host: "%UPSTREAM_HOST%"
+                  bytes_received: "%BYTES_RECEIVED%"
+                  bytes_sent: "%BYTES_SENT%"
+                  request_id: "%REQ(X-REQUEST-ID)%"
+                  request_user_agent: "%REQ(USER-AGENT)%"
+                  request_content_type: "%REQ(CONTENT-TYPE)%"
+                  request_accept: "%REQ(ACCEPT)%"
+                  request_body: "%DYNAMIC_METADATA(sanelens:request_body)%"
+                  request_forwarded_for: "%REQ(X-FORWARDED-FOR)%"
+                  request_forwarded_proto: "%REQ(X-FORWARDED-PROTO)%"
+                  response_content_type: "%RESP(CONTENT-TYPE)%"
+                  response_content_length: "%RESP(CONTENT-LENGTH)%"
+                  response_body: "%DYNAMIC_METADATA(sanelens:response_body)%"
+"#,
     )
 }
 

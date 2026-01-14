@@ -1,5 +1,14 @@
 pub const HISTORY_LIMIT: usize = 20000;
 pub const CLIENT_QUEUE_SIZE: usize = 10000;
 pub const TRAFFIC_CLIENT_QUEUE_SIZE: usize = 2000;
-pub const DEFAULT_PROJECT_NAME: &str = "compose";
+pub const TRAFFIC_CALL_HISTORY_LIMIT: usize = 2000;
 pub const BIN_NAME: &str = "sanelens";
+pub const PROJECT_PREFIX: &str = "sanelens_";
+pub const RUN_ID_LABEL: &str = "sanelens.run_id";
+pub const SERVICE_LABEL: &str = "sanelens.service";
+pub const PROXY_LABEL: &str = "sanelens.proxy";
+pub const PROXY_EGRESS_LABEL: &str = "sanelens.proxy.egress";
+pub const COMPOSE_FILE_LABEL: &str = "sanelens.compose_file";
+pub const DERIVED_COMPOSE_LABEL: &str = "sanelens.derived_compose";
+pub const STARTED_AT_LABEL: &str = "sanelens.started_at";
+pub const PROJECT_NAME_LABEL: &str = "sanelens.project_name";

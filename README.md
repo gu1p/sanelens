@@ -69,10 +69,14 @@ sanelens --no-traffic -f docker-compose.yml up
 sanelens -f docker-compose.yml up -d
 sanelens -f docker-compose.yml up --no-cache
 sanelens -f docker-compose.yml up --force-recreate
-COMPOSE_FILE=docker-compose.yml sanelens logs
+sanelens list
+sanelens logs <run_id>
+sanelens traffic <run_id>
+sanelens down <run_id>
 ```
 
 When running `up`, a log UI is started on a random local port and printed to stdout.
+The run id is printed on `up` and is required for `logs`, `traffic`, and `down`.
 Passing `--no-cache` to `up` runs a `compose build --no-cache` before starting containers.
 Passing `--force-recreate` to `up` forces containers to be recreated, and can be combined with `--no-cache`.
 `sanelens --version` prints the build version, commit hash, and build date.
@@ -80,7 +84,6 @@ Passing `--force-recreate` to `up` forces containers to be recreated, and can be
 ## Environment variables
 
 - `COMPOSE_FILE`: compose file path (first entry used if multiple)
-- `COMPOSE_PROJECT_NAME`: override project name
 - `COMPOSE_CMD`: override the compose command (e.g. `docker compose`)
 - `PODMAN_CONNECTION`: podman connection name (when using podman)
 - `COMPOSE_LOG_UI`: set to `0/false/no` to disable the log UI

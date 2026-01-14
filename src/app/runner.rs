@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs;
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -13,10 +15,10 @@ use crate::infra::derive::{derive_compose, DeriveConfig, DerivedCompose};
 use crate::infra::engine::{CleanupContext, Engine};
 use crate::infra::process::{spawn_process_group, terminate_process};
 use crate::infra::resolver::RuntimeResolver;
-use crate::infra::traffic::{observation_from_envoy, parse_envoy_log_line};
+use crate::infra::traffic::{observation_from_envoy, observation_from_tap, parse_envoy_log_line};
 use crate::infra::ui::{open_browser, UiServer};
 use crate::support::args::{
-    extract_subcommand, has_flag, has_project_name, insert_after, is_env_false, is_env_truthy,
+    extract_subcommand, has_flag, insert_after, is_env_false, is_env_truthy,
     strip_compose_file_args, take_flag,
 };
 use crate::support::constants::{BIN_NAME, HISTORY_LIMIT};
@@ -24,13 +26,13 @@ use crate::support::logging::{log_worker, LogHub, LogWorkerConfig};
 use crate::support::services::build_service_info;
 use crate::support::traffic::TrafficHub;
 
-struct ProcessHandles {
+pub struct ProcessHandles {
     compose_proc: Mutex<Option<Child>>,
     log_procs: Mutex<Vec<Child>>,
 }
 
 impl ProcessHandles {
-    const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             compose_proc: Mutex::new(None),
             log_procs: Mutex::new(Vec::new()),
@@ -49,7 +51,7 @@ impl ProcessHandles {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn stop_log_procs(&self) {
+    pub fn stop_log_procs(&self) {
         let mut procs = self.log_procs();
         for proc in procs.iter_mut() {
             terminate_process(proc, Duration::from_secs(5));
@@ -57,7 +59,7 @@ impl ProcessHandles {
         procs.clear();
     }
 
-    fn stop_compose_proc(&self) {
+    pub fn stop_compose_proc(&self) {
         let mut proc = self.compose_proc();
         if let Some(child) = proc.as_mut() {
             terminate_process(child, Duration::from_secs(10));
@@ -70,7 +72,9 @@ pub struct ComposeRunnerConfig {
     pub compose_cmd: Vec<String>,
     pub engine: Engine,
     pub compose_file: String,
+    pub run_id: String,
     pub project_name: String,
+    pub run_started_at: String,
     pub args: Vec<String>,
 }
 
@@ -80,7 +84,9 @@ pub struct ComposeRunner {
     original_compose_file: String,
     compose_file: String,
     compose_file_from_args: bool,
+    run_id: String,
     project_name: String,
+    run_started_at: String,
     compose_args: Vec<String>,
     engine: Engine,
     stop_event: Arc<AtomicBool>,
@@ -102,6 +108,8 @@ pub struct ComposeRunner {
     service_aliases: HashMap<String, String>,
     egress_proxy: Option<String>,
     watchdog_proc: Option<Child>,
+    derived_dir: Option<PathBuf>,
+    retain_run_dir: bool,
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -133,7 +141,9 @@ impl ComposeRunner {
             original_compose_file: config.compose_file.clone(),
             compose_file: config.compose_file,
             compose_file_from_args: false,
+            run_id: config.run_id,
             project_name: config.project_name,
+            run_started_at: config.run_started_at,
             compose_args: config.args,
             engine: config.engine,
             stop_event: Arc::new(AtomicBool::new(false)),
@@ -155,6 +165,8 @@ impl ComposeRunner {
             service_aliases: HashMap::new(),
             egress_proxy: None,
             watchdog_proc: None,
+            derived_dir: None,
+            retain_run_dir: false,
         }
     }
 
@@ -166,39 +178,56 @@ impl ComposeRunner {
         self.traffic_enabled = enabled;
     }
 
-    pub fn set_project_args(&mut self, args: Vec<String>) {
-        self.project_args = args;
+    pub fn set_derived_dir(&mut self, dir: Option<PathBuf>) {
+        self.derived_dir = dir;
     }
 
     pub const fn enable_cleanup(&mut self) {
         self.cleanup_enabled = true;
     }
 
-    fn configure_traffic(&mut self) {
-        if !self.traffic_enabled {
-            return;
-        }
-        let envoy_image = env::var("SANELENS_ENVOY_IMAGE")
-            .unwrap_or_else(|_| "envoyproxy/envoy:v1.30-latest".to_string());
-        let config = DeriveConfig {
+    fn prepare_derived_compose(&mut self) -> Result<(), String> {
+        let envoy_image = if self.traffic_enabled {
+            env::var("SANELENS_ENVOY_IMAGE")
+                .unwrap_or_else(|_| "envoyproxy/envoy:v1.30-latest".to_string())
+        } else {
+            "envoyproxy/envoy:v1.30-latest".to_string()
+        };
+        let mut config = DeriveConfig {
+            run_id: self.run_id.clone(),
+            run_started_at: self.run_started_at.clone(),
             envoy_image,
-            enable_egress: is_env_truthy("SANELENS_EGRESS_PROXY"),
+            enable_traffic: self.traffic_enabled,
+            enable_egress: self.traffic_enabled && is_env_truthy("SANELENS_EGRESS_PROXY"),
             compose_cmd: self.compose_cmd.clone(),
             compose_args: self.compose_args.clone(),
             compose_file_from_args: self.compose_file_from_args,
             disable_pods: self.engine.is_podman(),
         };
         match derive_compose(&self.original_compose_file, &self.project_name, &config) {
-            Ok(derived) => self.apply_derived_compose(derived),
+            Ok(derived) => {
+                self.apply_derived_compose(derived);
+                Ok(())
+            }
             Err(err) => {
+                if !self.traffic_enabled {
+                    return Err(err);
+                }
                 eprintln!("[compose] traffic disabled: {err}");
                 self.traffic_enabled = false;
+                config.enable_traffic = false;
+                config.enable_egress = false;
+                let derived =
+                    derive_compose(&self.original_compose_file, &self.project_name, &config)?;
+                self.apply_derived_compose(derived);
+                Ok(())
             }
         }
     }
 
     fn apply_derived_compose(&mut self, derived: DerivedCompose) {
         self.compose_file = derived.path.to_string_lossy().into_owned();
+        self.derived_dir = Some(derived.run_dir);
         self.proxy_services = derived.proxy_services;
         self.service_aliases = derived.app_service_map;
         self.egress_proxy = derived.egress_proxy;
@@ -230,7 +259,7 @@ impl ComposeRunner {
     }
 
     pub fn cleanup_once(&mut self) {
-        if !self.cleanup_enabled || self.cleanup_done {
+        if self.cleanup_done {
             return;
         }
         self.cleanup_done = true;
@@ -250,12 +279,19 @@ impl ComposeRunner {
             server.stop();
         }
         self.ui_server = None;
-        self.engine.cleanup_project(&CleanupContext {
-            compose_cmd: &self.compose_cmd,
-            compose_file: &self.compose_file,
-            project_name: &self.project_name,
-            project_args: &self.project_args,
-        });
+        if self.cleanup_enabled {
+            self.engine.cleanup_project(&CleanupContext {
+                compose_cmd: &self.compose_cmd,
+                compose_file: &self.compose_file,
+                project_name: &self.project_name,
+                project_args: &self.project_args,
+            });
+        }
+        if let Some(dir) = self.derived_dir.take().filter(|_| !self.retain_run_dir) {
+            if let Err(err) = fs::remove_dir_all(&dir) {
+                eprintln!("[compose] cleanup failed: {err}");
+            }
+        }
     }
 
     pub fn run(&mut self) -> i32 {
@@ -264,7 +300,10 @@ impl ComposeRunner {
             Err(code) => return code,
         };
 
-        self.configure_traffic();
+        if let Err(err) = self.prepare_derived_compose() {
+            eprintln!("[compose] derive failed: {err}");
+            return 1;
+        }
         self.apply_defaults(&subcommand_plan);
         let follow_plan = self.prepare_follow_plan(&subcommand_plan.name);
         self.maybe_cleanup_before_up(&subcommand_plan.name);
@@ -312,9 +351,7 @@ impl ComposeRunner {
     }
 
     fn apply_defaults(&mut self, plan: &SubcommandPlan) {
-        if !has_project_name(&self.compose_args) {
-            self.project_args = vec!["-p".to_string(), self.project_name.clone()];
-        }
+        self.project_args.clear();
 
         if plan.name == "up" {
             if !plan.no_cache_requested
@@ -352,15 +389,16 @@ impl ComposeRunner {
         let user_no_start_requested = has_flag(&self.compose_args, &["--no-start"]);
 
         let detach_requested = has_flag(&self.compose_args, &["-d", "--detach"]);
-        let ui_enabled =
-            subcommand == "up" && (!is_env_false("COMPOSE_LOG_UI") || self.traffic_enabled);
+        let ui_enabled = subcommand == "up"
+            && !detach_requested
+            && (!is_env_false("COMPOSE_LOG_UI") || self.traffic_enabled);
         if ui_enabled {
             self.start_ui();
         }
 
         let manual_log_follow = self.engine.manual_log_follow(subcommand, detach_requested);
         let mut log_follow_enabled = ui_enabled || manual_log_follow;
-        let mut traffic_follow = self.traffic_enabled;
+        let mut traffic_follow = self.traffic_enabled && !detach_requested;
         let emit_stdout = self.engine.emit_stdout_for_logs(detach_requested);
         if subcommand == "up" && user_no_start_requested {
             if log_follow_enabled || traffic_follow {
@@ -369,7 +407,9 @@ impl ComposeRunner {
             log_follow_enabled = false;
             traffic_follow = false;
         }
-        self.cleanup_enabled = log_follow_enabled || traffic_follow;
+        self.cleanup_enabled =
+            (subcommand == "up" && !detach_requested) || log_follow_enabled || traffic_follow;
+        self.retain_run_dir = subcommand == "up" && detach_requested;
         if self.cleanup_enabled && self.engine.supports_watchdog() {
             self.start_watchdog();
         }
@@ -404,10 +444,10 @@ impl ComposeRunner {
         }
         let running_ids = self
             .engine
-            .collect_container_ids(&self.project_name, Scope::Running);
+            .collect_run_container_ids(&self.run_id, Scope::Running);
         let all_ids = self
             .engine
-            .collect_container_ids(&self.project_name, Scope::All);
+            .collect_run_container_ids(&self.run_id, Scope::All);
         if running_ids.is_empty() && !all_ids.is_empty() {
             self.engine.cleanup_project(&CleanupContext {
                 compose_cmd: &self.compose_cmd,
@@ -463,6 +503,7 @@ impl ComposeRunner {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
+        cmd.env_remove("COMPOSE_PROJECT_NAME");
         let child = match spawn_process_group(&mut cmd) {
             Ok(child) => child,
             Err(err) => {
@@ -552,6 +593,7 @@ impl ComposeRunner {
     fn log_follower(&self) -> LogFollower {
         LogFollower {
             engine: self.engine.clone(),
+            run_id: self.run_id.clone(),
             project_name: self.project_name.clone(),
             stop_event: self.stop_event.clone(),
             log_hub: self.log_hub.clone(),
@@ -566,8 +608,14 @@ impl ComposeRunner {
             return None;
         }
         let hub = self.ensure_traffic_hub()?;
+        let tap_dir = self
+            .derived_dir
+            .as_ref()
+            .map(|dir| dir.join("tap"))
+            .filter(|dir| dir.exists());
         Some(TrafficFollower {
             engine: self.engine.clone(),
+            run_id: self.run_id.clone(),
             project_name: self.project_name.clone(),
             stop_event: self.stop_event.clone(),
             handles: self.handles.clone(),
@@ -575,6 +623,7 @@ impl ComposeRunner {
             proxy_services: self.proxy_services.clone(),
             service_aliases: self.service_aliases.clone(),
             egress_proxy: self.egress_proxy.clone(),
+            tap_dir,
         })
     }
 
@@ -588,6 +637,7 @@ impl ComposeRunner {
         let mut cmd = Command::new(exe);
         cmd.arg("--watchdog")
             .arg(std::process::id().to_string())
+            .arg(&self.run_id)
             .arg(&self.project_name)
             .arg(&self.compose_file)
             .stdout(Stdio::null())
@@ -601,8 +651,9 @@ impl ComposeRunner {
     }
 }
 
-struct LogFollower {
+pub struct LogFollower {
     engine: Engine,
+    run_id: String,
     project_name: String,
     stop_event: Arc<AtomicBool>,
     log_hub: Option<Arc<LogHub>>,
@@ -612,7 +663,34 @@ struct LogFollower {
 }
 
 impl LogFollower {
-    fn follow_logs(&self, emit_stdout: bool, log_threads: &mut Vec<thread::JoinHandle<()>>) -> i32 {
+    #[allow(clippy::too_many_arguments, clippy::missing_const_for_fn)]
+    pub fn new(
+        engine: Engine,
+        run_id: String,
+        project_name: String,
+        stop_event: Arc<AtomicBool>,
+        log_hub: Option<Arc<LogHub>>,
+        handles: Arc<ProcessHandles>,
+        proxy_services: HashSet<String>,
+        service_aliases: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            engine,
+            run_id,
+            project_name,
+            stop_event,
+            log_hub,
+            handles,
+            proxy_services,
+            service_aliases,
+        }
+    }
+
+    pub fn follow_logs(
+        &self,
+        emit_stdout: bool,
+        log_threads: &mut Vec<thread::JoinHandle<()>>,
+    ) -> i32 {
         let ids = self.wait_for_container_ids();
         if ids.is_empty() {
             return 1;
@@ -748,7 +826,7 @@ impl LogFollower {
         while !self.stop_event.load(Ordering::SeqCst) {
             let ids = self
                 .engine
-                .collect_container_ids(&self.project_name, Scope::Running);
+                .collect_run_container_ids(&self.run_id, Scope::Running);
             if !ids.is_empty() {
                 return ids;
             }
@@ -758,8 +836,9 @@ impl LogFollower {
     }
 }
 
-struct TrafficFollower {
+pub struct TrafficFollower {
     engine: Engine,
+    run_id: String,
     project_name: String,
     stop_event: Arc<AtomicBool>,
     handles: Arc<ProcessHandles>,
@@ -767,6 +846,7 @@ struct TrafficFollower {
     proxy_services: HashSet<String>,
     service_aliases: HashMap<String, String>,
     egress_proxy: Option<String>,
+    tap_dir: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -776,42 +856,110 @@ struct TrafficWorkerContext {
     stop_event: Arc<AtomicBool>,
     service_name: String,
     is_egress: bool,
+    tap_enabled: bool,
+}
+
+#[derive(Clone)]
+struct TapWorkerContext {
+    hub: Arc<TrafficHub>,
+    resolver: Arc<RuntimeResolver>,
+    stop_event: Arc<AtomicBool>,
+    service_name: String,
+    is_egress: bool,
+    tap_dir: PathBuf,
 }
 
 impl TrafficFollower {
-    fn follow(&self) -> i32 {
+    #[allow(clippy::too_many_arguments, clippy::missing_const_for_fn)]
+    pub fn new(
+        engine: Engine,
+        run_id: String,
+        project_name: String,
+        stop_event: Arc<AtomicBool>,
+        handles: Arc<ProcessHandles>,
+        hub: Arc<TrafficHub>,
+        proxy_services: HashSet<String>,
+        service_aliases: HashMap<String, String>,
+        egress_proxy: Option<String>,
+        tap_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            engine,
+            run_id,
+            project_name,
+            stop_event,
+            handles,
+            hub,
+            proxy_services,
+            service_aliases,
+            egress_proxy,
+            tap_dir,
+        }
+    }
+
+    pub fn follow(&self) -> i32 {
         if self.proxy_services.is_empty() {
             return 0;
         }
-        let ids = self.wait_for_proxy_container_ids();
-        if ids.is_empty() {
-            return 1;
+        let mut workers = Vec::new();
+        let mut seen = HashSet::new();
+        let mut tap_seen = HashSet::new();
+
+        while !self.stop_event.load(Ordering::SeqCst) {
+            let ids = self
+                .engine
+                .collect_run_proxy_container_ids(&self.run_id, Scope::Running);
+            let new_ids: Vec<String> = ids
+                .into_iter()
+                .filter(|id| seen.insert(id.clone()))
+                .collect();
+            if !new_ids.is_empty() {
+                let resolver = Arc::new(RuntimeResolver::from_engine(
+                    &self.engine,
+                    &self.run_id,
+                    &self.service_aliases,
+                ));
+                workers.extend(self.spawn_workers(&new_ids, &resolver, &mut tap_seen));
+            }
+            self.prune_finished_log_procs();
+            Self::prune_finished_workers(&mut workers);
+            if !self.stop_event.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_millis(250));
+            }
         }
-        let resolver = Arc::new(RuntimeResolver::from_engine(
-            &self.engine,
-            &self.project_name,
-            &self.service_aliases,
-        ));
-
-        let workers = self.spawn_workers(&ids, &resolver);
-
         for handle in workers {
             let _ = handle.join();
         }
         0
     }
 
+    fn prune_finished_log_procs(&self) {
+        let mut procs = self.handles.log_procs();
+        procs.retain_mut(|child| child.try_wait().ok().flatten().is_none());
+        drop(procs);
+    }
+
+    fn prune_finished_workers(workers: &mut Vec<thread::JoinHandle<()>>) {
+        let mut remaining = Vec::with_capacity(workers.len());
+        for handle in workers.drain(..) {
+            if handle.is_finished() {
+                let _ = handle.join();
+            } else {
+                remaining.push(handle);
+            }
+        }
+        *workers = remaining;
+    }
+
     fn spawn_workers(
         &self,
         ids: &[String],
         resolver: &Arc<RuntimeResolver>,
+        tap_seen: &mut HashSet<String>,
     ) -> Vec<thread::JoinHandle<()>> {
         let mut workers = Vec::new();
         for cid in ids {
             let service = self.engine.resolve_service_name(&self.project_name, cid);
-            if !self.proxy_services.contains(&service) {
-                continue;
-            }
             let is_egress = self.egress_proxy.as_deref() == Some(&service);
             let log_cmd = self.engine.logs_cmd(cid, false);
             let Some((log_bin, log_args)) = log_cmd.split_first() else {
@@ -834,6 +982,7 @@ impl TrafficFollower {
                 stop_event: self.stop_event.clone(),
                 service_name: service.clone(),
                 is_egress,
+                tap_enabled: self.tap_dir.is_some(),
             };
 
             if let Some(stdout) = stdout {
@@ -842,32 +991,20 @@ impl TrafficFollower {
             if let Some(stderr) = stderr {
                 Self::spawn_traffic_worker(stderr, context, &mut workers);
             }
+
+            if let Some(tap_dir) = self.tap_dir_for_service(&service, tap_seen) {
+                let tap_context = TapWorkerContext {
+                    hub: self.hub.clone(),
+                    resolver: resolver.clone(),
+                    stop_event: self.stop_event.clone(),
+                    service_name: service.clone(),
+                    is_egress,
+                    tap_dir,
+                };
+                Self::spawn_tap_worker(tap_context, &mut workers);
+            }
         }
         workers
-    }
-
-    fn wait_for_proxy_container_ids(&self) -> Vec<String> {
-        while !self.stop_event.load(Ordering::SeqCst) {
-            let ids = self
-                .engine
-                .collect_container_ids(&self.project_name, Scope::All);
-            if ids.is_empty() {
-                thread::sleep(Duration::from_millis(500));
-                continue;
-            }
-            let proxy_ids: Vec<String> = ids
-                .into_iter()
-                .filter(|cid| {
-                    let service = self.engine.resolve_service_name(&self.project_name, cid);
-                    self.proxy_services.contains(&service)
-                })
-                .collect();
-            if !proxy_ids.is_empty() {
-                return proxy_ids;
-            }
-            thread::sleep(Duration::from_millis(500));
-        }
-        Vec::new()
     }
 
     fn spawn_traffic_worker<R: Read + Send + 'static>(
@@ -880,6 +1017,25 @@ impl TrafficFollower {
         });
         workers.push(thread);
     }
+
+    fn tap_dir_for_service(
+        &self,
+        service_name: &str,
+        tap_seen: &mut HashSet<String>,
+    ) -> Option<PathBuf> {
+        let tap_root = self.tap_dir.as_ref()?;
+        if !tap_seen.insert(service_name.to_string()) {
+            return None;
+        }
+        Some(tap_root.join(service_name))
+    }
+
+    fn spawn_tap_worker(context: TapWorkerContext, workers: &mut Vec<thread::JoinHandle<()>>) {
+        let thread = thread::spawn(move || {
+            tap_file_worker(context);
+        });
+        workers.push(thread);
+    }
 }
 
 fn traffic_log_worker<R: Read>(reader: R, context: TrafficWorkerContext) {
@@ -889,6 +1045,7 @@ fn traffic_log_worker<R: Read>(reader: R, context: TrafficWorkerContext) {
         stop_event,
         service_name,
         is_egress,
+        tap_enabled,
     } = context;
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
@@ -907,12 +1064,54 @@ fn traffic_log_worker<R: Read>(reader: R, context: TrafficWorkerContext) {
         let Some(log) = parse_envoy_log_line(trimmed) else {
             continue;
         };
+        if tap_enabled && (log.method.is_some() || log.path.is_some() || log.authority.is_some()) {
+            continue;
+        }
         let now_ms = current_time_ms();
         if let Some(obs) =
             observation_from_envoy(log, &service_name, resolver.as_ref(), is_egress, now_ms)
         {
             hub.emit(obs);
         }
+    }
+}
+
+fn tap_file_worker(context: TapWorkerContext) {
+    let TapWorkerContext {
+        hub,
+        resolver,
+        stop_event,
+        service_name,
+        is_egress,
+        tap_dir,
+    } = context;
+    let _ = fs::create_dir_all(&tap_dir);
+    while !stop_event.load(Ordering::SeqCst) {
+        let Ok(entries) = fs::read_dir(&tap_dir) else {
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(payload) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let now_ms = current_time_ms();
+            if let Some(obs) = observation_from_tap(
+                &payload,
+                &service_name,
+                resolver.as_ref(),
+                is_egress,
+                now_ms,
+            ) {
+                hub.emit(obs);
+                let _ = fs::remove_file(&path);
+            }
+        }
+        thread::sleep(Duration::from_millis(250));
     }
 }
 
@@ -932,6 +1131,21 @@ pub struct SignalContext {
 }
 
 impl SignalContext {
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn new(
+        stop_event: Arc<AtomicBool>,
+        signal_handled: Arc<AtomicBool>,
+        exit_code: Arc<AtomicI32>,
+        handles: Arc<ProcessHandles>,
+    ) -> Self {
+        Self {
+            stop_event,
+            signal_handled,
+            exit_code,
+            handles,
+        }
+    }
+
     pub fn handle_signal(&self) {
         if self.signal_handled.swap(true, Ordering::SeqCst) {
             return;

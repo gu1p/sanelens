@@ -23,6 +23,35 @@ export type Transport =
   | { kind: "udp" }
   | { kind: "other"; code: number };
 
+export interface Socket {
+  ip: string;
+  port: number;
+}
+
+export interface FlowKey {
+  src: Socket;
+  dst: Socket;
+  transport: Transport;
+}
+
+export interface Peer {
+  src?: EntityId | null;
+  dst?: EntityId | null;
+  raw?: FlowKey | null;
+}
+
+export interface Correlation {
+  request_id?: string | null;
+  trace_id?: string | null;
+  span_id?: string | null;
+}
+
+export interface ObservationAttrs {
+  visibility: "l4_flow" | "l7_envelope" | "l7_semantics";
+  confidence: "exact" | "likely" | "uncertain";
+  tags: Record<string, string>;
+}
+
 export type EdgeKey =
   | {
       kind: "flow";
@@ -60,6 +89,24 @@ export interface TrafficEdge {
   key: EdgeKey;
   stats: EdgeStats;
   last_seen_ms: number;
+}
+
+export interface TrafficCall {
+  seq: number;
+  at_ms: number;
+  peer: Peer;
+  method?: string | null;
+  path?: string | null;
+  status?: number | null;
+  duration_ms?: number | null;
+  bytes_in?: number | null;
+  bytes_out?: number | null;
+  request_headers: Record<string, string>;
+  response_headers: Record<string, string>;
+  request_body?: string | null;
+  response_body?: string | null;
+  correlation: Correlation;
+  attrs: ObservationAttrs;
 }
 
 export interface PanelState {

@@ -1,11 +1,20 @@
 <script lang="ts">
   import Button from "../ui/Button.svelte";
+  import Chip from "../ui/Chip.svelte";
+
+  type TabId = "logs" | "traffic";
 
   type TopBarProps = {
     onAddPanel?: () => void;
+    activeTab?: TabId;
+    onTabChange?: (tab: TabId) => void;
   };
 
-  let { onAddPanel = () => {} }: TopBarProps = $props();
+  let {
+    onAddPanel = () => {},
+    activeTab = "logs",
+    onTabChange = () => {},
+  }: TopBarProps = $props();
 </script>
 
 <div
@@ -16,6 +25,26 @@
     <div class="text-xs text-muted">Log Deck</div>
   </div>
   <div class="flex items-center gap-3">
-    <Button variant="primary" onclick={onAddPanel}>Add panel</Button>
+    <div class="flex items-center gap-1 rounded-full border border-ink/10 bg-panel/70 p-1">
+      <Chip
+        size="sm"
+        active={activeTab === "logs"}
+        muted={activeTab !== "logs"}
+        onclick={() => onTabChange("logs")}
+      >
+        Logs
+      </Chip>
+      <Chip
+        size="sm"
+        active={activeTab === "traffic"}
+        muted={activeTab !== "traffic"}
+        onclick={() => onTabChange("traffic")}
+      >
+        Traffic
+      </Chip>
+    </div>
+    {#if activeTab === "logs"}
+      <Button variant="primary" onclick={onAddPanel}>Add panel</Button>
+    {/if}
   </div>
 </div>

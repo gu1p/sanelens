@@ -5,9 +5,9 @@ use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 
 use crate::domain::traffic::{
     EdgeKey, EdgeStats, EntityId, FlowObservation, HttpObservation, Observation, ObservationSink,
-    TrafficEdge, Visibility,
+    TrafficCall, TrafficEdge, Visibility,
 };
-use crate::support::constants::TRAFFIC_CLIENT_QUEUE_SIZE;
+use crate::support::constants::{TRAFFIC_CALL_HISTORY_LIMIT, TRAFFIC_CLIENT_QUEUE_SIZE};
 
 const LATENCY_SAMPLE_LIMIT: usize = 256;
 
@@ -21,6 +21,10 @@ struct TrafficHubState {
     edges: HashMap<EdgeKey, EdgeState>,
     clients: Vec<(usize, Sender<TrafficEdge>)>,
     next_client_id: usize,
+    calls: VecDeque<TrafficCall>,
+    call_clients: Vec<(usize, Sender<TrafficCall>)>,
+    next_call_client_id: usize,
+    next_call_seq: u64,
 }
 
 pub struct TrafficHub {
@@ -34,6 +38,10 @@ impl TrafficHub {
                 edges: HashMap::new(),
                 clients: Vec::new(),
                 next_client_id: 1,
+                calls: VecDeque::with_capacity(TRAFFIC_CALL_HISTORY_LIMIT),
+                call_clients: Vec::new(),
+                next_call_client_id: 1,
+                next_call_seq: 1,
             }),
         }
     }
@@ -53,6 +61,17 @@ impl TrafficHub {
                 last_seen_ms: edge.last_seen_ms,
             })
             .collect();
+        drop(state);
+        (receiver, snapshot)
+    }
+
+    pub fn register_call_client(&self) -> (Receiver<TrafficCall>, Vec<TrafficCall>) {
+        let (sender, receiver) = bounded(TRAFFIC_CLIENT_QUEUE_SIZE);
+        let mut state = self.state();
+        let id = state.next_call_client_id;
+        state.next_call_client_id += 1;
+        state.call_clients.push((id, sender));
+        let snapshot = state.calls.iter().cloned().collect();
         drop(state);
         (receiver, snapshot)
     }
@@ -96,14 +115,11 @@ impl TrafficHub {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn emit_http(&self, http: HttpObservation) {
-        let from = http.peer.src.unwrap_or(EntityId::Unknown);
-        let to = http.peer.dst.unwrap_or(EntityId::Unknown);
-        let method = http
-            .method
-            .unwrap_or_else(|| "UNKNOWN".to_string())
-            .to_uppercase();
-        let route = http.path.unwrap_or_else(|| "/".to_string());
+    fn emit_http(&self, http: &HttpObservation) {
+        let from = http.peer.src.clone().unwrap_or(EntityId::Unknown);
+        let to = http.peer.dst.clone().unwrap_or(EntityId::Unknown);
+        let method = http.method.as_deref().unwrap_or("UNKNOWN").to_uppercase();
+        let route = http.path.clone().unwrap_or_else(|| "/".to_string());
         let key = EdgeKey::Http {
             from,
             to,
@@ -148,6 +164,7 @@ impl TrafficHub {
         };
         drop(state);
         self.publish(&snapshot);
+        self.publish_call(http);
     }
 
     fn emit_flow(&self, flow: FlowObservation) {
@@ -187,12 +204,58 @@ impl TrafficHub {
         drop(state);
         self.publish(&snapshot);
     }
+
+    fn publish_call(&self, http: &HttpObservation) {
+        let (call, clients) = {
+            let mut state = self.state();
+            let seq = state.next_call_seq;
+            state.next_call_seq += 1;
+            let call = TrafficCall {
+                seq,
+                at_ms: http.at_ms,
+                peer: http.peer.clone(),
+                method: http.method.clone(),
+                path: http.path.clone(),
+                status: http.status,
+                duration_ms: http.duration_ms,
+                bytes_in: http.bytes_in,
+                bytes_out: http.bytes_out,
+                request_headers: http.request_headers.clone(),
+                response_headers: http.response_headers.clone(),
+                request_body: http.request_body.clone(),
+                response_body: http.response_body.clone(),
+                correlation: http.correlation.clone(),
+                attrs: http.attrs.clone(),
+            };
+            state.calls.push_back(call.clone());
+            while state.calls.len() > TRAFFIC_CALL_HISTORY_LIMIT {
+                state.calls.pop_front();
+            }
+            (call, state.call_clients.clone())
+        };
+
+        let mut disconnected = Vec::new();
+        for (id, sender) in clients {
+            match sender.try_send(call.clone()) {
+                Ok(()) | Err(TrySendError::Full(_)) => {}
+                Err(TrySendError::Disconnected(_)) => {
+                    disconnected.push(id);
+                }
+            }
+        }
+        if !disconnected.is_empty() {
+            let mut state = self.state();
+            state
+                .call_clients
+                .retain(|(id, _)| !disconnected.contains(id));
+        }
+    }
 }
 
 impl ObservationSink for TrafficHub {
     fn emit(&self, obs: Observation) {
         match obs {
-            Observation::Http(http) => self.emit_http(http),
+            Observation::Http(http) => self.emit_http(&http),
             Observation::Flow(flow) => self.emit_flow(flow),
         }
     }

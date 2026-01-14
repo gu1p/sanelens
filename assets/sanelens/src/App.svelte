@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import FilterDrawer from "./components/FilterDrawer.svelte";
   import LayoutShell from "./components/LayoutShell.svelte";
   import PanelGrid from "./components/PanelGrid.svelte";
   import ServicesPanel from "./components/ServicesPanel.svelte";
   import SplitLayout from "./components/SplitLayout.svelte";
   import TopBar from "./components/TopBar.svelte";
-  import TrafficPanel from "./components/TrafficPanel.svelte";
+  import TrafficExplorer from "./components/TrafficExplorer.svelte";
   import {
     HISTORY_LIMIT,
     MAX_LINES_PER_PANEL,
+    TRAFFIC_CALL_LIMIT,
     URL_SYNC_DELAY,
   } from "./lib/constants";
   import { buildPanelMeta, entryMatchesPanel } from "./lib/filters";
@@ -18,6 +20,7 @@
     PanelConfig,
     PanelState,
     ServiceInfo,
+    TrafficCall,
     TrafficEdge,
   } from "./lib/types";
   import { buildSearchString, readStateFromUrl, serializePanelsConfig } from "./lib/url-state";
@@ -36,10 +39,17 @@
     history: [],
   });
 
+  type TabId = "logs" | "traffic";
+
+  let activeTab: TabId = $state("logs");
   let trafficEdges: TrafficEdge[] = $state([]);
   let trafficError: string | null = $state(null);
   let trafficStream: EventSource | null = null;
-  const trafficMap = new Map<string, TrafficEdge>();
+  const trafficMap = new SvelteMap<string, TrafficEdge>();
+
+  let trafficCalls: TrafficCall[] = $state([]);
+  let trafficCallsError: string | null = $state(null);
+  let trafficCallsStream: EventSource | null = null;
 
   let panelCounter = 0;
   let pendingUrlSync: ReturnType<typeof setTimeout> | null = null;
@@ -56,6 +66,16 @@
     }
     return appState.panels.find((panel) => panel.id === appState.activePanelId) ?? null;
   });
+
+  function setActiveTab(tab: TabId) {
+    if (activeTab === tab) {
+      return;
+    }
+    activeTab = tab;
+    if (tab === "traffic") {
+      drawerPanel = null;
+    }
+  }
 
   function setActivePanel(panelId: string) {
     const changed = appState.activePanelId !== panelId;
@@ -281,6 +301,18 @@
     updateTrafficEdges();
   }
 
+  function handleTrafficCallsSnapshot(calls: TrafficCall[]) {
+    trafficCalls = calls.slice(-TRAFFIC_CALL_LIMIT);
+    trafficCallsError = null;
+  }
+
+  function handleTrafficCall(call: TrafficCall) {
+    trafficCalls.push(call);
+    while (trafficCalls.length > TRAFFIC_CALL_LIMIT) {
+      trafficCalls.shift();
+    }
+  }
+
   function startEventStream() {
     eventStream = new EventSource("/events");
     eventStream.addEventListener("history", (event) => {
@@ -333,6 +365,35 @@
     };
   }
 
+  function startTrafficCallsStream() {
+    trafficCallsStream = new EventSource("/traffic/calls");
+    trafficCallsStream.addEventListener("snapshot", (event) => {
+      try {
+        const calls = JSON.parse((event as MessageEvent).data);
+        if (Array.isArray(calls)) {
+          handleTrafficCallsSnapshot(calls as TrafficCall[]);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    });
+    trafficCallsStream.onmessage = (event) => {
+      try {
+        const call = JSON.parse(event.data) as TrafficCall;
+        if (call?.seq) {
+          handleTrafficCall(call);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    };
+    trafficCallsStream.onerror = () => {
+      if (!trafficCallsError) {
+        trafficCallsError = "Traffic capture is not enabled for this run.";
+      }
+    };
+  }
+
   async function init() {
     try {
       const response = await fetch("/api/services");
@@ -343,6 +404,7 @@
       }
       startEventStream();
       startTrafficStream();
+      startTrafficCallsStream();
     } catch (error) {
       loadError = "Failed to load services.";
       console.error(error);
@@ -354,23 +416,23 @@
     return () => {
       eventStream?.close();
       trafficStream?.close();
+      trafficCallsStream?.close();
     };
   });
 </script>
 
 <LayoutShell {drawerOpen}>
   {#snippet header()}
-    <TopBar onAddPanel={createPanel} />
+    <TopBar onAddPanel={createPanel} activeTab={activeTab} onTabChange={setActiveTab} />
   {/snippet}
 
-  <SplitLayout>
-    {#snippet sidebar()}
-      <ServicesPanel services={appState.services} error={loadError} onSelect={handleServiceSelect} />
-    {/snippet}
-    {#snippet content()}
-      <div class="flex h-full min-h-0 flex-col gap-4">
-        <TrafficPanel edges={trafficEdges} error={trafficError} />
-        <div class="min-h-0 flex-1">
+  {#if activeTab === "logs"}
+    <SplitLayout>
+      {#snippet sidebar()}
+        <ServicesPanel services={appState.services} error={loadError} onSelect={handleServiceSelect} />
+      {/snippet}
+      {#snippet content()}
+        <div class="min-h-0 h-full">
           <PanelGrid
             panels={appState.panels}
             services={appState.services}
@@ -383,9 +445,18 @@
             onSelectAll={setAllServices}
           />
         </div>
-      </div>
-    {/snippet}
-  </SplitLayout>
+      {/snippet}
+    </SplitLayout>
+  {:else}
+    <div class="h-full min-h-0 px-4 pb-6 pt-4 sm:px-6 sm:pb-8 sm:pt-5 lg:px-8 lg:pb-12 lg:pt-6">
+      <TrafficExplorer
+        calls={trafficCalls}
+        edges={trafficEdges}
+        edgeError={trafficError}
+        callError={trafficCallsError}
+      />
+    </div>
+  {/if}
 </LayoutShell>
 
 <FilterDrawer

@@ -1,18 +1,24 @@
+use std::collections::HashMap;
 use std::env;
 use std::net::IpAddr;
+use std::process::{Command, Stdio};
 
 use crate::domain::{EngineKind, Scope};
 use crate::infra::compose::{
-    collect_docker_container_ids, collect_podman_container_ids,
-    collect_podman_container_ids_by_name, remove_project_pods, resolve_service_name_docker,
-    resolve_service_name_podman,
+    collect_docker_container_ids_by_label, collect_docker_container_ids_by_label_key,
+    collect_docker_container_ids_by_labels, collect_podman_container_ids,
+    collect_podman_container_ids_by_label, collect_podman_container_ids_by_label_key,
+    collect_podman_container_ids_by_labels, collect_podman_container_ids_by_name,
+    remove_project_pods, resolve_service_name_docker, resolve_service_name_podman,
 };
 use crate::infra::process::run_output;
+use crate::support::constants::{PROXY_LABEL, RUN_ID_LABEL};
 
 pub struct ContainerInfo {
     pub id: String,
     pub service: Option<String>,
     pub ips: Vec<IpAddr>,
+    pub labels: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -85,13 +91,36 @@ impl Engine {
         matches!(self.kind, EngineKind::Podman)
     }
 
-    pub fn collect_container_ids(&self, project_name: &str, scope: Scope) -> Vec<String> {
+    pub fn collect_run_container_ids(&self, run_id: &str, scope: Scope) -> Vec<String> {
         match self.kind {
             EngineKind::Podman => {
-                collect_podman_container_ids(&self.podman_cmd, project_name, scope)
+                collect_podman_container_ids_by_label(&self.podman_cmd, RUN_ID_LABEL, run_id, scope)
             }
             EngineKind::Docker => {
-                collect_docker_container_ids(&self.docker_cmd, project_name, scope)
+                collect_docker_container_ids_by_label(&self.docker_cmd, RUN_ID_LABEL, run_id, scope)
+            }
+        }
+    }
+
+    pub fn collect_run_proxy_container_ids(&self, run_id: &str, scope: Scope) -> Vec<String> {
+        let labels = [(RUN_ID_LABEL, run_id), (PROXY_LABEL, "true")];
+        match self.kind {
+            EngineKind::Podman => {
+                collect_podman_container_ids_by_labels(&self.podman_cmd, &labels, scope)
+            }
+            EngineKind::Docker => {
+                collect_docker_container_ids_by_labels(&self.docker_cmd, &labels, scope)
+            }
+        }
+    }
+
+    pub fn collect_container_ids_with_label(&self, label_key: &str, scope: Scope) -> Vec<String> {
+        match self.kind {
+            EngineKind::Podman => {
+                collect_podman_container_ids_by_label_key(&self.podman_cmd, label_key, scope)
+            }
+            EngineKind::Docker => {
+                collect_docker_container_ids_by_label_key(&self.docker_cmd, label_key, scope)
             }
         }
     }
@@ -118,14 +147,14 @@ impl Engine {
     }
 
     pub fn cleanup_project(&self, context: &CleanupContext<'_>) {
-        if !matches!(self.kind, EngineKind::Podman) {
-            return;
-        }
         Self::compose_down(
             context.compose_cmd,
             context.compose_file,
             context.project_args,
         );
+        if !matches!(self.kind, EngineKind::Podman) {
+            return;
+        }
         remove_project_pods(&self.podman_cmd, context.project_name);
         let mut ids =
             collect_podman_container_ids(&self.podman_cmd, context.project_name, Scope::All);
@@ -145,13 +174,22 @@ impl Engine {
     }
 
     fn compose_down(compose_cmd: &[String], compose_file: &str, project_args: &[String]) {
-        let mut cmd = compose_cmd.to_vec();
-        cmd.push("-f".to_string());
-        cmd.push(compose_file.to_string());
-        cmd.extend(project_args.iter().cloned());
-        cmd.push("down".to_string());
-        cmd.push("--remove-orphans".to_string());
-        let _ = run_output(&cmd);
+        let Some((compose_bin, compose_args)) = compose_cmd.split_first() else {
+            return;
+        };
+        let mut command = Command::new(compose_bin);
+        command
+            .args(compose_args)
+            .arg("-f")
+            .arg(compose_file)
+            .args(project_args)
+            .arg("down")
+            .arg("--remove-orphans")
+            .arg("--volumes")
+            .env_remove("COMPOSE_PROJECT_NAME")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let _ = command.output();
     }
 
     pub fn inspect_containers(&self, ids: &[String]) -> Vec<ContainerInfo> {
@@ -181,22 +219,17 @@ impl Engine {
                 .and_then(|value| value.as_str())
                 .unwrap_or("")
                 .to_string();
-            let labels = item
-                .get("Config")
-                .and_then(|value| value.get("Labels"))
-                .and_then(|value| value.as_object());
-            let service = labels
-                .and_then(|map| {
-                    map.get("com.docker.compose.service")
-                        .or_else(|| map.get("io.podman.compose.service"))
-                })
-                .and_then(|value| value.as_str())
-                .map(ToString::to_string);
+            let labels_map = extract_labels_map(item);
+            let service = labels_map
+                .get("com.docker.compose.service")
+                .or_else(|| labels_map.get("io.podman.compose.service"))
+                .cloned();
             let ip_addresses = extract_ips(item);
             info.push(ContainerInfo {
                 id,
                 service,
                 ips: ip_addresses,
+                labels: labels_map,
             });
         }
         info
@@ -219,6 +252,23 @@ fn extract_connection(compose_cmd: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_labels_map(container: &serde_json::Value) -> HashMap<String, String> {
+    let Some(map) = container
+        .get("Config")
+        .and_then(|value| value.get("Labels"))
+        .and_then(|value| value.as_object())
+    else {
+        return HashMap::new();
+    };
+    map.iter()
+        .filter_map(|(key, value)| {
+            value
+                .as_str()
+                .map(|value| (key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 fn extract_ips(container: &serde_json::Value) -> Vec<IpAddr> {

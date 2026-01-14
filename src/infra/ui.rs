@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use crate::domain::traffic::TrafficEdge;
+use crate::domain::traffic::{TrafficCall, TrafficEdge};
 use crate::domain::{LogEvent, ServiceInfo};
 use crate::support::logging::LogHub;
 use crate::support::traffic::TrafficHub;
@@ -120,6 +120,13 @@ fn spawn_connection_handler(
     });
 }
 
+struct UiRouteContext<'a> {
+    log_hub: &'a Arc<LogHub>,
+    service_info: &'a Arc<Vec<ServiceInfo>>,
+    traffic_hub: Option<&'a Arc<TrafficHub>>,
+    stop_event: &'a Arc<AtomicBool>,
+}
+
 fn handle_connection(
     stream: TcpStream,
     log_hub: &Arc<LogHub>,
@@ -128,15 +135,44 @@ fn handle_connection(
     stop_event: &Arc<AtomicBool>,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
+    let Some(request_line) = read_request_line(&mut reader)? else {
+        return Ok(());
+    };
+    let Some((method, path)) = parse_request_line(&request_line) else {
+        return Ok(());
+    };
+    drain_headers(&mut reader)?;
+
+    if method != "GET" {
+        return write_response(stream, 405, "text/plain", b"Method not allowed");
+    }
+
+    let context = UiRouteContext {
+        log_hub,
+        service_info,
+        traffic_hub,
+        stop_event,
+    };
+    route_request(path, stream, &context)
+}
+
+fn read_request_line(reader: &mut BufReader<TcpStream>) -> io::Result<Option<String>> {
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
-        return Ok(());
+        return Ok(None);
     }
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
+    Ok(Some(request_line))
+}
+
+fn parse_request_line(line: &str) -> Option<(&str, &str)> {
+    let mut parts = line.split_whitespace();
+    let method = parts.next()?;
     let path = parts.next().unwrap_or("/");
     let path = path.split('?').next().unwrap_or(path);
+    Some((method, path))
+}
 
+fn drain_headers(reader: &mut BufReader<TcpStream>) -> io::Result<()> {
     loop {
         let mut line = String::new();
         let bytes = reader.read_line(&mut line)?;
@@ -144,11 +180,10 @@ fn handle_connection(
             break;
         }
     }
+    Ok(())
+}
 
-    if method != "GET" {
-        return write_response(stream, 405, "text/plain", b"Method not allowed");
-    }
-
+fn route_request(path: &str, stream: TcpStream, context: &UiRouteContext<'_>) -> io::Result<()> {
     match path {
         "/" | "/index.html" => write_response(
             stream,
@@ -168,25 +203,52 @@ fn handle_connection(
             "text/css; charset=utf-8",
             STYLES_CSS.as_bytes(),
         ),
-        "/api/services" => {
-            let payload = serde_json::to_vec(&ServicesResponse {
-                services: service_info.as_slice(),
-            })
-            .unwrap_or_default();
-            write_response_with_headers(
-                stream,
-                200,
-                "application/json",
-                &payload,
-                &["Cache-Control: no-store"],
-            )
+        "/api/services" => write_services_response(stream, context.service_info),
+        "/events" => write_event_stream(stream, context.log_hub, context.stop_event),
+        "/traffic" => route_traffic_stream(stream, context.traffic_hub, context.stop_event),
+        "/traffic/calls" => {
+            route_traffic_calls_stream(stream, context.traffic_hub, context.stop_event)
         }
-        "/events" => write_event_stream(stream, log_hub, stop_event),
-        "/traffic" => match traffic_hub {
-            Some(hub) => write_traffic_stream(stream, hub, stop_event),
-            None => write_response(stream, 404, "text/plain", b"Not found"),
-        },
         _ => write_response(stream, 404, "text/plain", b"Not found"),
+    }
+}
+
+fn write_services_response(
+    stream: TcpStream,
+    service_info: &Arc<Vec<ServiceInfo>>,
+) -> io::Result<()> {
+    let payload = serde_json::to_vec(&ServicesResponse {
+        services: service_info.as_slice(),
+    })
+    .unwrap_or_default();
+    write_response_with_headers(
+        stream,
+        200,
+        "application/json",
+        &payload,
+        &["Cache-Control: no-store"],
+    )
+}
+
+fn route_traffic_stream(
+    stream: TcpStream,
+    traffic_hub: Option<&Arc<TrafficHub>>,
+    stop_event: &Arc<AtomicBool>,
+) -> io::Result<()> {
+    match traffic_hub {
+        Some(hub) => write_traffic_stream(stream, hub, stop_event),
+        None => write_response(stream, 404, "text/plain", b"Not found"),
+    }
+}
+
+fn route_traffic_calls_stream(
+    stream: TcpStream,
+    traffic_hub: Option<&Arc<TrafficHub>>,
+    stop_event: &Arc<AtomicBool>,
+) -> io::Result<()> {
+    match traffic_hub {
+        Some(hub) => write_traffic_calls_stream(stream, hub, stop_event),
+        None => write_response(stream, 404, "text/plain", b"Not found"),
     }
 }
 
@@ -320,6 +382,46 @@ fn write_traffic_stream(
     Ok(())
 }
 
+fn write_traffic_calls_stream(
+    mut stream: TcpStream,
+    hub: &Arc<TrafficHub>,
+    stop_event: &Arc<AtomicBool>,
+) -> io::Result<()> {
+    let headers = [
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/event-stream",
+        "Cache-Control: no-cache",
+        "Connection: keep-alive",
+        "\r\n",
+    ]
+    .join("\r\n");
+    stream.write_all(headers.as_bytes())?;
+    stream.flush()?;
+
+    let (receiver, snapshot) = hub.register_call_client();
+    if write_traffic_call_snapshot(&mut stream, &snapshot).is_err() {
+        return Ok(());
+    }
+
+    while !stop_event.load(Ordering::SeqCst) {
+        match receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(event) => {
+                if write_traffic_call_event(&mut stream, &event).is_err() {
+                    break;
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                if stream.write_all(b": ping\n\n").is_err() {
+                    break;
+                }
+                let _ = stream.flush();
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
 fn write_traffic_snapshot(stream: &mut TcpStream, edges: &[TrafficEdge]) -> io::Result<()> {
     let payload = serde_json::to_string(edges).unwrap_or_default();
     stream.write_all(format!("event: snapshot\ndata: {payload}\n\n").as_bytes())?;
@@ -329,6 +431,20 @@ fn write_traffic_snapshot(stream: &mut TcpStream, edges: &[TrafficEdge]) -> io::
 
 fn write_traffic_event(stream: &mut TcpStream, edge: &TrafficEdge) -> io::Result<()> {
     let payload = serde_json::to_string(edge).unwrap_or_default();
+    stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn write_traffic_call_snapshot(stream: &mut TcpStream, calls: &[TrafficCall]) -> io::Result<()> {
+    let payload = serde_json::to_string(calls).unwrap_or_default();
+    stream.write_all(format!("event: snapshot\ndata: {payload}\n\n").as_bytes())?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn write_traffic_call_event(stream: &mut TcpStream, call: &TrafficCall) -> io::Result<()> {
+    let payload = serde_json::to_string(call).unwrap_or_default();
     stream.write_all(format!("data: {payload}\n\n").as_bytes())?;
     stream.flush()?;
     Ok(())
